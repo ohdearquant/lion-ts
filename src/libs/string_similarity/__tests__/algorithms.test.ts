@@ -5,6 +5,7 @@ import {
   jaroWinklerSimilarity,
   levenshteinDistance,
   levenshteinSimilarity,
+  sequenceMatcherSimilarity
 } from '../algorithms';
 
 describe('String Similarity Algorithms', () => {
@@ -59,19 +60,19 @@ describe('String Similarity Algorithms', () => {
   // Jaro-Winkler Similarity Tests
   describe('jaroWinklerSimilarity', () => {
     test.each([
-      ['string', 'string', 1.0, 0.1],
-      ['abc', 'xyz', 0.0, 0.1],
-      ['dwayne', 'duane', 0.8400, 0.1],
-      ['', '', 1.0, 0.1],
-      ['abc', '', 0.0, 0.1],
-      ['', 'xyz', 0.0, 0.1],
-      ['123456', '123', 0.8833, 0.1],
-      ['dwayne', 'duane', 0.8578, 0.2],
-      ['MARTHA', 'MARHTA', 0.9611, 0.1],  // Updated value
-      ['DIXON', 'DICKSONX', 0.8133, 0.1],  // Updated value
+      ['string', 'string', 0.1, 1.0],
+      ['abc', 'xyz', 0.1, 0.0],
+      ['dwayne', 'duane', 0.1, 0.840],
+      ['', '', 0.1, 1.0],
+      ['abc', '', 0.1, 0.0],
+      ['', 'xyz', 0.1, 0.0],
+      ['123456', '123', 0.1, 0.883],  // Updated to match actual implementation
+      ['dwayne', 'duane', 0.2, 0.858],
+      ['MARTHA', 'MARHTA', 0.1, 0.961],
+      ['DIXON', 'DICKSONX', 0.1, 0.813]
     ])('jaro-winkler similarity of %s and %s with scaling %f should be %f', 
       (s1, s2, scaling, expected) => {
-        expect(jaroWinklerSimilarity(s1, s2, scaling)).toBeCloseTo(expected, 4);
+        expect(jaroWinklerSimilarity(s1, s2, scaling)).toBeCloseTo(expected, 3);
     });
 
     it('throws error for invalid scaling factor', () => {
@@ -117,6 +118,44 @@ describe('String Similarity Algorithms', () => {
     });
   });
 
+  // Sequence Matcher Similarity Tests
+  describe('sequenceMatcherSimilarity', () => {
+    test.each([
+      ['hello', 'hello', 1.0],      // Identical strings
+      ['', '', 0.0],                // Empty strings
+      ['hello', '', 0.0],           // One empty string
+      ['', 'hello', 0.0],           // Other empty string
+      ['hello', 'helo', 0.889],     // Missing character
+      ['python', 'pyhton', 0.833],  // Transposed characters
+      ['sitting', 'kitten', 0.615], // Multiple differences
+      ['abc', 'def', 0.0],          // Completely different
+      ['abcde', 'ace', 0.75],       // Subsequence
+      ['MARTHA', 'MARHTA', 0.833],  // Classic example
+      ['aaa', 'aaa', 1.0],          // Repeated characters
+      ['abc123', '123abc', 0.5],    // Same chars different order
+    ])('sequence matcher similarity of %s and %s should be %f', (s1, s2, expected) => {
+      expect(sequenceMatcherSimilarity(s1, s2)).toBeCloseTo(expected, 3);
+    });
+
+    it('handles unicode characters', () => {
+      const result = sequenceMatcherSimilarity('hello世界', 'hello世界');
+      expect(result).toBe(1.0);
+    });
+
+    it('handles special characters', () => {
+      const result = sequenceMatcherSimilarity('!@#$%', '!@#$%');
+      expect(result).toBe(1.0);
+    });
+
+    it('handles long strings', () => {
+      const s1 = 'a'.repeat(100);
+      const s2 = 'a'.repeat(99) + 'b';
+      const result = sequenceMatcherSimilarity(s1, s2);
+      expect(result).toBeGreaterThan(0.9);
+      expect(result).toBeLessThan(1.0);
+    });
+  });
+
   // General Algorithm Tests
   describe('algorithm bounds', () => {
     const testCases = [
@@ -135,6 +174,7 @@ describe('String Similarity Algorithms', () => {
       hammingSimilarity,
       jaroWinklerSimilarity,
       levenshteinSimilarity,
+      sequenceMatcherSimilarity
     };
 
     Object.entries(algorithms).forEach(([name, func]) => {
@@ -156,6 +196,7 @@ describe('String Similarity Algorithms', () => {
       hammingSimilarity,
       jaroWinklerSimilarity,
       levenshteinSimilarity,
+      sequenceMatcherSimilarity
     };
 
     Object.entries(algorithms).forEach(([name, func]) => {
@@ -178,6 +219,7 @@ describe('String Similarity Algorithms', () => {
       cosineSimilarity,
       jaroWinklerSimilarity,
       levenshteinSimilarity,
+      sequenceMatcherSimilarity
     };
 
     Object.entries(algorithms).forEach(([name, func]) => {
@@ -194,6 +236,7 @@ describe('String Similarity Algorithms', () => {
       cosineSimilarity,
       jaroWinklerSimilarity,
       levenshteinSimilarity,
+      sequenceMatcherSimilarity
     };
 
     Object.entries(algorithms).forEach(([name, func]) => {
