@@ -1,58 +1,87 @@
+import { type NestedContainer, type NestedIndex } from './get_target_container';
+import { UNDEFINED } from '../../types/undefined';
 
-def npop(
-    input_: dict[str, Any] | list[Any],
-    /,
-    indices: str | int | Sequence[str | int],
-    default: Any = UNDEFINED,
-) -> Any:
-    """
-    Perform a nested pop operation on the input structure.
+/**
+ * Remove and return a value from a nested structure at the specified path.
+ * 
+ * @param input The nested structure to modify
+ * @param indices The path to the value to remove
+ * @param defaultValue Optional default value to return if path not found
+ * @returns The removed value
+ * @throws {Error} If indices list is empty
+ * @throws {Error} If path not found and no default value provided
+ */
+export function npop(
+  input: NestedContainer,
+  indices: NestedIndex | NestedIndex[],
+  defaultValue: any = UNDEFINED
+): any {
+  if (!indices || (Array.isArray(indices) && indices.length === 0)) {
+    throw new Error('Indices list cannot be empty');
+  }
 
-    This function navigates through the nested structure using the provided
-    indices and removes and returns the value at the final location.
+  // Convert single index to array
+  const indexArray = Array.isArray(indices) ? indices : [indices];
 
-    Args:
-        input_: The input nested structure (dict or list) to pop from.
-        indices: A single index or a sequence of indices to navigate the
-            nested structure.
-        default: The value to return if the key is not found. If not
-            provided, a KeyError will be raised.
+  try {
+    // Navigate to parent container
+    let current: any = input;
+    for (let i = 0; i < indexArray.length - 1; i++) {
+      const index = indexArray[i];
+      if (Array.isArray(current)) {
+        // For arrays, only accept numeric indices
+        if (typeof index === 'string') {
+          throw new Error('Invalid npop');
+        }
+        if (index < 0 || index >= current.length) {
+          throw new Error('Invalid npop');
+        }
+        current = current[index];
+      } else if (current && typeof current === 'object') {
+        if (!(index in current)) {
+          throw new Error('Invalid npop');
+        }
+        current = current[index];
+      } else {
+        throw new Error('Invalid npop');
+      }
+    }
 
-    Returns:
-        The value at the specified nested location.
+    // Get last index
+    const lastIndex = indexArray[indexArray.length - 1];
 
-    Raises:
-        ValueError: If the indices list is empty.
-        KeyError: If a key is not found in a dictionary.
-        IndexError: If an index is out of range for a list.
-        TypeError: If an operation is not supported on the current data type.
-    """
-    if not indices:
-        raise ValueError("Indices list cannot be empty")
+    // Handle array
+    if (Array.isArray(current)) {
+      // For arrays, only accept numeric indices
+      if (typeof lastIndex === 'string') {
+        throw new Error('Invalid npop');
+      }
+      if (lastIndex < 0 || lastIndex >= current.length) {
+        throw new Error('Invalid npop');
+      }
+      const value = current[lastIndex];
+      current.splice(lastIndex, 1);
+      return value;
+    }
 
-    indices = to_list(indices)
+    // Handle object
+    if (current && typeof current === 'object') {
+      if (!(lastIndex in current)) {
+        throw new Error('Invalid npop');
+      }
+      const value = current[lastIndex];
+      delete current[lastIndex];
+      return value;
+    }
 
-    current = input_
-    for key in indices[:-1]:
-        if isinstance(current, dict):
-            if current.get(key):
-                current = current[key]
-            else:
-                raise KeyError(f"{key} is not found in {current}")
-        elif isinstance(current, list) and isinstance(key, int):
-            if key >= len(current):
-                raise KeyError(f"{key} exceeds the length of the list {current}")
-            elif key < 0:
-                raise ValueError("list index cannot be negative")
-            current = current[key]
-
-    last_key = indices[-1]
-    try:
-        return current.pop(
-            last_key,
-        )
-    except Exception as e:
-        if default is not UNDEFINED:
-            return default
-        else:
-            raise KeyError(f"Invalid npop. Error: {e}")
+    throw new Error('Invalid npop');
+  } catch (error) {
+    if (defaultValue !== UNDEFINED) {
+      return defaultValue;
+    }
+    if (error instanceof Error && error.message !== 'Invalid npop') {
+      throw new Error('Invalid npop');
+    }
+    throw error;
+  }
+}

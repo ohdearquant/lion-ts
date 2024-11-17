@@ -14,26 +14,12 @@
  * limitations under the License.
  */
 
-import { fieldSerializer } from 'pydantic';
-import { getClass } from 'lion/core/_class_registry';
-import {
-  UNDEFINED,
-  Any,
-  ClassVar,
-  Field,
-  FieldInfo,
-  FieldModel,
-  Note,
-  OperableModel,
-  PydanticUndefined,
-  TypeVar,
-} from 'lion/core/typing';
-import { copy, time } from 'lion/libs/utils';
-import { Adapter, AdapterRegistry } from 'lion/protocols/adapters/adapter';
-import { ComponentAdapterRegistry } from 'lion/protocols/registries/_component_registry';
+import { getClass } from '../_class_registry';
+import { UNDEFINED, Any, FieldInfo, FieldModel, Note, PydanticUndefined } from '../types';
+import { copy, time } from '../../libs/utils';
+import { Adapter, AdapterRegistry } from '../../protocols/adapters/adapter';
+import { ComponentAdapterRegistry } from '../../protocols/registries/_component_registry';
 import { Element } from './element';
-
-const FIELD_NAME = TypeVar('FIELD_NAME', String);
 
 const DEFAULT_SERIALIZATION_INCLUDE: Set<string> = new Set([
   'ln_id',
@@ -43,27 +29,36 @@ const DEFAULT_SERIALIZATION_INCLUDE: Set<string> = new Set([
   'embedding',
 ]);
 
-export class Component extends Element implements OperableModel {
-  metadata: Note = Field({
-    defaultFactory: () => new Note(),
-    description: 'Additional metadata for the component',
-  });
+/**
+ * Extended base class for components in the Lion framework.
+ */
+export class Component extends Element {
+  /** Additional metadata for the component */
+  metadata: Note;
 
-  content: Any = Field({
-    default: null,
-    description: 'The main content of the Component',
-  });
+  /** The main content of the Component */
+  content: any;
 
-  embedding: number[] = Field({ defaultFactory: () => [] });
+  /** Embedding vector */
+  embedding: number[];
 
-  static _adapterRegistry: ClassVar<AdapterRegistry> = ComponentAdapterRegistry;
+  private static _adapterRegistry: AdapterRegistry = ComponentAdapterRegistry;
 
-  @fieldSerializer('metadata')
-  _serializeMetadata(value: Note): Record<string, any> {
+  constructor() {
+    super();
+    this.metadata = new Note();
+    this.content = null;
+    this.embedding = [];
+  }
+
+  /**
+   * Serialize metadata Note recursively.
+   */
+  private _serializeMetadata(value: Note): Record<string, any> {
     return this._serializeNoteRecursive(value);
   }
 
-  _serializeNoteRecursive(note: Note): Record<string, any> {
+  private _serializeNoteRecursive(note: Note): Record<string, any> {
     const result: Record<string, any> = {};
     for (const [key, value] of Object.entries(note)) {
       if (value instanceof Note) {
@@ -75,12 +70,15 @@ export class Component extends Element implements OperableModel {
     return result;
   }
 
+  /**
+   * Add a new field to the component's extra fields.
+   */
   addField(
-    fieldName: FIELD_NAME,
-    value: Any = UNDEFINED,
-    annotation: any = UNDEFINED,
-    fieldObj: FieldInfo = UNDEFINED,
-    fieldModel: FieldModel = UNDEFINED,
+    fieldName: string,
+    value: any = UNDEFINED,
+    annotation?: any,
+    fieldObj?: FieldInfo,
+    fieldModel?: FieldModel,
     ...kwargs: any[]
   ): void {
     if (fieldName in this.allFields) {
@@ -90,24 +88,30 @@ export class Component extends Element implements OperableModel {
     this.updateField(fieldName, value, annotation, fieldObj, fieldModel, ...kwargs);
   }
 
+  /**
+   * Update an existing field or create a new one if it doesn't exist.
+   */
   updateField(
-    fieldName: FIELD_NAME,
-    value: Any = UNDEFINED,
-    annotation: any = UNDEFINED,
-    fieldObj: FieldInfo = UNDEFINED,
-    fieldModel: FieldModel = UNDEFINED,
+    fieldName: string,
+    value: any = UNDEFINED,
+    annotation?: any,
+    fieldObj?: FieldInfo,
+    fieldModel?: FieldModel,
     ...kwargs: any[]
   ): void {
     super.updateField(fieldName, value, annotation, fieldObj, fieldModel, ...kwargs);
     this._addLastUpdate(fieldName);
   }
 
-  _addLastUpdate(fieldName: FIELD_NAME): void {
+  private _addLastUpdate(fieldName: string): void {
     const currentTime = time();
     this.metadata.set(['last_updated', fieldName], currentTime);
   }
 
-  toDict(...kwargs: any[]): Record<string, any> {
+  /**
+   * Convert the component to a dictionary representation.
+   */
+  override toDict(...kwargs: any[]): Record<string, any> {
     const dict = this.modelDump(...kwargs);
     if (this.content instanceof Note) {
       dict['content'] = this._serializeNoteRecursive(this.content);
@@ -123,11 +127,17 @@ export class Component extends Element implements OperableModel {
     return result;
   }
 
+  /**
+   * Convert the component to a Note object.
+   */
   toNote(...kwargs: any[]): Note {
     return new Note(this.toDict(...kwargs));
   }
 
-  static fromDict(data: Record<string, any>, ...kwargs: any[]): Component {
+  /**
+   * Create a component instance from a dictionary.
+   */
+  static override fromDict(data: Record<string, any>, ...kwargs: any[]): Component {
     const inputData = copy(data);
     if ('lion_class' in inputData) {
       const cls = getClass(inputData['lion_class']);
@@ -151,12 +161,15 @@ export class Component extends Element implements OperableModel {
     if (lastUpdated !== null) {
       obj.metadata.set(['last_updated'], lastUpdated);
     } else {
-      obj.metadata.pop(['last_updated'], null);
+      obj.metadata.pop(['last_updated']);
     }
     return obj;
   }
 
-  __setattr__(fieldName: string, value: any): void {
+  /**
+   * Set attribute value with metadata update.
+   */
+  override setAttribute(fieldName: string, value: any): void {
     if (fieldName === 'metadata') {
       throw new Error('Cannot directly assign to metadata.');
     } else if (fieldName === 'extra_fields') {
@@ -165,13 +178,16 @@ export class Component extends Element implements OperableModel {
     if (fieldName in this.extraFields) {
       Object.defineProperty(this, fieldName, { value });
     } else {
-      super.__setattr__(fieldName, value);
+      super.setAttribute(fieldName, value);
     }
 
     this._addLastUpdate(fieldName);
   }
 
-  __getattr__(fieldName: string): any {
+  /**
+   * Get attribute value with default handling.
+   */
+  override getAttribute(fieldName: string): any {
     if (fieldName in this.extraFields) {
       const default_ = this.extraFields[fieldName].default;
       if (default_ !== PydanticUndefined) {
@@ -184,7 +200,10 @@ export class Component extends Element implements OperableModel {
     throw new Error(`'${clsName}' object has no attribute '${fieldName}'`);
   }
 
-  toString(): string {
+  /**
+   * Return a concise string representation of the component.
+   */
+  override toString(): string {
     let contentPreview = String(this.content).slice(0, 50);
     if (contentPreview.length === 50) {
       contentPreview += '...';
@@ -213,7 +232,10 @@ export class Component extends Element implements OperableModel {
     return outputStr;
   }
 
-  toRepr(): string {
+  /**
+   * Return a detailed string representation of the component.
+   */
+  override toRepr(): string {
     const truncateDict = (d: Record<string, any>, maxItems = 5, maxStrLen = 50): Record<string, any> => {
       const items = Object.entries(d).slice(0, maxItems);
       const truncated: Record<string, any> = {};
@@ -257,25 +279,40 @@ export class Component extends Element implements OperableModel {
     return reprStr;
   }
 
+  /**
+   * Adapt this component to another type.
+   */
   adaptTo(objKey: string, ...args: any[]): any {
-    return this._getAdapterRegistry().adaptTo(this, objKey, ...args);
+    return Component._getAdapterRegistry().adaptTo(this, objKey, ...args);
   }
 
+  /**
+   * List available adapters.
+   */
   static listAdapters(): string[] {
     return this._getAdapterRegistry().listAdapters();
   }
 
+  /**
+   * Register a new adapter.
+   */
   static registerAdapter(adapter: typeof Adapter): void {
     this._getAdapterRegistry().register(adapter);
   }
 
-  static _getAdapterRegistry(): AdapterRegistry {
+  /**
+   * Get the adapter registry.
+   */
+  private static _getAdapterRegistry(): AdapterRegistry {
     if (typeof this._adapterRegistry === 'function') {
       this._adapterRegistry = new this._adapterRegistry();
     }
     return this._adapterRegistry;
   }
 
+  /**
+   * Create a component from another type.
+   */
   static adaptFrom(obj: any, objKey: string, ...args: any[]): Component {
     const dict = this._getAdapterRegistry().adaptFrom(this, obj, objKey, ...args);
     return this.fromDict(dict);

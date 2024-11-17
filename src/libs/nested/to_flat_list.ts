@@ -1,56 +1,126 @@
+/**
+ * Options for flattening lists
+ */
+export interface ToFlatListOptions {
+  /** Remove null and undefined values from result */
+  dropna?: boolean;
+  /** Remove duplicate values from result */
+  unique?: boolean;
+}
 
+/**
+ * Type guard to check if a value is iterable
+ */
+function isIterable(value: unknown): value is Iterable<unknown> {
+  return value !== null && 
+         value !== undefined && 
+         typeof value === 'object' && 
+         Symbol.iterator in value;
+}
 
-def _flatten_list_generator(
-    lst_: list[Any], dropna: bool
-) -> Generator[Any, None, None]:
-    for i in lst_:
-        if isinstance(i, list):
-            yield from _flatten_list_generator(i, dropna)
-        else:
-            yield i
+/**
+ * Generator function to flatten a list recursively
+ */
+function* flattenListGenerator(
+  list: unknown[],
+  dropna: boolean,
+  seen = new WeakSet()
+): Generator<unknown> {
+  for (const item of list) {
+    if (Array.isArray(item)) {
+      // Handle circular references
+      if (seen.has(item)) {
+        continue;
+      }
+      seen.add(item);
+      yield* flattenListGenerator(item, dropna, seen);
+    } else if (!dropna || (item !== null && item !== undefined)) {
+      yield item;
+    }
+  }
+}
 
+/**
+ * Filter out null and undefined values from an array
+ */
+function dropNaValues(arr: unknown[]): unknown[] {
+  return arr.filter(item => item !== null && item !== undefined);
+}
 
-def to_flat_list(
-    input_: Any, /, *, dropna: bool = False, unique: bool = True
-) -> list[Any]:
-    if isinstance(input_, type(None) | UndefinedType | PydanticUndefinedType):
-        return []
+/**
+ * Convert Map entries to array format
+ */
+function mapToArray(map: Map<unknown, unknown>): unknown[] {
+  return Array.from(map.entries()).map(([key, value]) => [key, value]);
+}
 
-    if not isinstance(input_, Iterable) or isinstance(
-        input_, (str, bytes, bytearray, dict)
-    ):
-        return [input_]
+/**
+ * Convert any input into a flattened list.
+ * 
+ * @param input The input to convert to a flat list
+ * @param options Optional configuration:
+ *   - dropna: Remove null and undefined values from result
+ *   - unique: Remove duplicate values from result
+ * @returns A flattened list
+ * 
+ * @example
+ * ```typescript
+ * toFlatList([1, [2, 3], [[4]]]); // [1, 2, 3, 4]
+ * toFlatList([1, null, [2, undefined]], { dropna: true }); // [1, 2]
+ * toFlatList([1, [2, 1], [2]], { unique: true }); // [1, 2]
+ * ```
+ */
+export function toFlatList(
+  input: unknown,
+  { dropna = false, unique = false }: ToFlatListOptions = {}
+): unknown[] {
+  // Handle null/undefined input
+  if (input === null || input === undefined) {
+    return [];
+  }
 
-    if isinstance(input_, list):
-        return _flatten_list(input_, dropna, unique=unique)
+  // Handle non-iterable input
+  if (!isIterable(input) || typeof input === 'string' || input instanceof Uint8Array) {
+    return [input];
+  }
 
-    if isinstance(input_, tuple):
-        return _flatten_list(list(input_), dropna, unique=unique)
+  // Handle Map input
+  if (input instanceof Map) {
+    return mapToArray(input);
+  }
 
-    if isinstance(input_, set):
-        return list(_dropna_iterator(list(input_))) if dropna else list(input_)
+  // Convert input to array if it's not already
+  const inputArray = Array.isArray(input) ? input : Array.from(input);
 
-    try:
-        iterable_list = list(input_)
-        return _flatten_list(iterable_list, dropna, unique=unique)
+  // Handle empty input
+  if (inputArray.length === 0) {
+    return [];
+  }
 
-    except Exception as e:
-        raise ValueError(f"Could not convert {type(input_)} object to list: {e}") from e
+  // Flatten the list
+  let result = Array.from(flattenListGenerator(inputArray, dropna));
 
+  // Apply dropna if requested
+  if (dropna) {
+    result = dropNaValues(result);
+  }
 
-def _dropna_iterator(lst_: list[Any]) -> iter:
-    return (item for item in lst_ if item is not None)
+  // Remove duplicates if requested
+  if (unique) {
+    try {
+      // Try to use Set for primitive values
+      result = Array.from(new Set(result));
+    } catch {
+      // If Set conversion fails (e.g., with objects), use manual deduplication
+      const seen = new Set();
+      result = result.filter(item => {
+        const key = typeof item === 'object' ? JSON.stringify(item) : item;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    }
+  }
 
-
-def _flatten_list(
-    lst_: list[Any], dropna: bool = False, unique: bool = False
-) -> list[Any]:
-    flattened_list = list(_flatten_list_generator(lst_, dropna))
-    if dropna:
-        flattened_list = list(_dropna_iterator(flattened_list))
-    if unique:
-        try:
-            flattened_list = list(set(flattened_list))
-        except Exception:
-            pass
-    return flattened_list
+  return result;
+}

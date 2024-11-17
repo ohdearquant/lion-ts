@@ -1,74 +1,108 @@
+import type { NestedContainer } from './get_target_container';
 
-def unflatten(
-    flat_dict: dict[str, Any], sep: str = "|", inplace: bool = False
-) -> dict[str, Any] | list[Any]:
-    """
-    Unflatten a single-level dictionary into a nested dictionary or list.
+export interface UnflattenOptions {
+  sep?: string;
+  inplace?: boolean;
+}
 
-    Args:
-        flat_dict: The flattened dictionary to unflatten.
-        sep: The separator used for joining keys.
-        inplace: Whether to modify the input dictionary in place.
+/**
+ * Convert a flattened dictionary back into a nested structure.
+ * 
+ * @param flatDict The flattened dictionary to unflatten
+ * @param options Optional configuration:
+ *   - sep: Separator used in flattened keys (default: '|')
+ *   - inplace: Modify input object in place (default: false)
+ * @returns The unflattened nested structure
+ * @throws {Error} If input is invalid or has invalid key types
+ */
+export function unflatten(
+  flatDict: Record<string, any>,
+  options: UnflattenOptions = {}
+): NestedContainer {
+  const { sep = '|', inplace = false } = options;
 
-    Returns:
-        The unflattened nested dictionary or list.
+  if (!flatDict || typeof flatDict !== 'object') {
+    throw new Error('Input must be a dictionary');
+  }
 
-    Examples:
-        >>> unflatten({"a|b|c": 1, "a|b|d": 2})
-        {'a': {'b': {'c': 1, 'd': 2}}}
+  if (sep === '') {
+    throw new Error('Separator cannot be empty');
+  }
 
-        >>> unflatten({"0": "a", "1": "b", "2": "c"})
-        ['a', 'b', 'c']
-    """
+  // Handle empty input
+  if (Object.keys(flatDict).length === 0) {
+    return {};
+  }
 
-    def _unflatten(data: dict) -> dict | list:
-        result = {}
-        for key, value in data.items():
-            parts = key.split(sep)
-            current = result
-            for part in parts[:-1]:
-                if part not in current:
-                    current[part] = {}
-                current = current[part]
-            if isinstance(value, dict):
-                current[parts[-1]] = _unflatten(value)
-            else:
-                current[parts[-1]] = value
+  // Check if all keys are numeric to determine if result should be an array
+  const allNumericKeys = Object.keys(flatDict).every(key => {
+    const firstPart = key.split(sep)[0];
+    return !isNaN(parseInt(firstPart));
+  });
 
-        # Convert dictionary to list if keys are consecutive integers
-        if result and all(isinstance(key, str) and key.isdigit() for key in result):
-            return [result[str(i)] for i in range(len(result))]
-        return result
+  const result: Record<string, any> = allNumericKeys ? [] : {};
 
-    if inplace:
-        unflattened_dict = {}
-        for key, value in flat_dict.items():
-            parts = key.split(sep)
-            current = unflattened_dict
-            for part in parts[:-1]:
-                if part not in current:
-                    current[part] = {}
-                current = current[part]
-            current[parts[-1]] = value
+  for (const [key, value] of Object.entries(flatDict)) {
+    if (typeof key !== 'string') {
+      throw new TypeError('Keys must be strings');
+    }
 
-        unflattened_result = _unflatten(unflattened_dict)
-        flat_dict.clear()
-        if isinstance(unflattened_result, list):
-            flat_dict.update({str(i): v for i, v in enumerate(unflattened_result)})
-        else:
-            flat_dict.update(unflattened_result)
-        return flat_dict
+    const parts = key.split(sep);
+    let current: Record<string, any> = result;
 
-    else:
-        unflattened_dict = {}
-        for key, value in flat_dict.items():
-            parts = key.split(sep)
-            current = unflattened_dict
-            for part in parts[:-1]:
-                if part not in current:
-                    current[part] = {}
-                current = current[part]
-            current[parts[-1]] = value
+    for (let i = 0; i < parts.length - 1; i++) {
+      const part = parts[i];
+      const nextPart = parts[i + 1];
+      const isNextNumeric = !isNaN(parseInt(nextPart));
 
-        return _unflatten(unflattened_dict)
+      if (!(part in current)) {
+        current[part] = isNextNumeric ? [] : {};
+      } else if (typeof current[part] !== 'object') {
+        // If we encounter a non-object where we need an object, create one
+        current[part] = isNextNumeric ? [] : {};
+      }
 
+      current = current[part] as Record<string, any>;
+    }
+
+    const lastPart = parts[parts.length - 1];
+    current[lastPart] = value;
+  }
+
+  // Convert numeric indices to actual arrays
+  function convertNumericIndices(obj: any): any {
+    if (Array.isArray(obj)) {
+      return obj.map(item => convertNumericIndices(item));
+    }
+    
+    if (obj && typeof obj === 'object') {
+      const allNumeric = Object.keys(obj).every(key => !isNaN(parseInt(key)));
+      if (allNumeric && Object.keys(obj).length > 0) {
+        const maxIndex = Math.max(...Object.keys(obj).map(k => parseInt(k)));
+        const arr = new Array(maxIndex + 1).fill(null);
+        for (const [key, value] of Object.entries(obj)) {
+          arr[parseInt(key)] = convertNumericIndices(value);
+        }
+        return arr;
+      }
+
+      const result: Record<string, any> = {};
+      for (const [key, value] of Object.entries(obj)) {
+        result[key] = convertNumericIndices(value);
+      }
+      return result;
+    }
+
+    return obj;
+  }
+
+  const finalResult = convertNumericIndices(result);
+
+  if (inplace && typeof flatDict === 'object' && !Array.isArray(flatDict)) {
+    Object.keys(flatDict).forEach(key => delete flatDict[key]);
+    Object.assign(flatDict, finalResult);
+    return flatDict as NestedContainer;
+  }
+
+  return finalResult as NestedContainer;
+}

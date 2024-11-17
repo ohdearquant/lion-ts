@@ -1,153 +1,139 @@
-import { 
-  UNDEFINED, 
-  type Dict,
-  type Callable,
-  type MaybeUndefined 
-} from '../constants';
-import { BaseModel, Field } from './base';
+/**
+ * Copyright 2024 HaiyangLi
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import { Field } from './base';
+import { SchemaModel } from './schema';
+import { UNDEFINED, type Undefined } from '../types/undefined';
+import { Callable, Dict, FieldInfo } from '../types/base';
+
+type MaybeUndefined<T> = T | Undefined;
 
 /**
- * Model for field definitions with validation and metadata
+ * Model representing a field definition with validation and metadata
  */
-export class FieldModel extends BaseModel {
+export class FieldModel extends SchemaModel {
   @Field({
-    type: 'any',
-    description: 'Default value for the field'
+    description: 'Default value for the field',
   })
-  default: MaybeUndefined<any> = UNDEFINED;
+  default: any = UNDEFINED;
 
   @Field({
-    type: 'function',
-    description: 'Factory function for default value'
+    description: 'Factory function to generate default value',
   })
   defaultFactory: MaybeUndefined<Callable> = UNDEFINED;
 
   @Field({
-    type: 'string',
-    description: 'Title of the field'
+    description: 'Field title',
   })
   title: MaybeUndefined<string> = UNDEFINED;
 
   @Field({
-    type: 'string',
-    description: 'Description of the field'
+    description: 'Field description',
   })
   description: MaybeUndefined<string> = UNDEFINED;
 
   @Field({
-    type: 'array',
-    description: 'Example values for the field'
+    description: 'Example values',
+    defaultFactory: () => [],
   })
-  examples: MaybeUndefined<any[]> = UNDEFINED;
+  examples: any[] = [];
 
   @Field({
-    type: 'array',
-    description: 'Validation functions for the field'
+    description: 'List of validator functions',
+    defaultFactory: () => [],
   })
-  validators: MaybeUndefined<Callable[]> = UNDEFINED;
+  validators: Callable[] = [];
 
   @Field({
-    type: 'boolean',
-    description: 'Whether to exclude this field from serialization'
+    description: 'Whether to exclude from serialization',
   })
   exclude: MaybeUndefined<boolean> = UNDEFINED;
 
   @Field({
-    type: 'boolean',
-    description: 'Whether this field is deprecated'
+    description: 'Whether field is deprecated',
   })
   deprecated: MaybeUndefined<boolean> = UNDEFINED;
 
   @Field({
-    type: 'boolean',
-    description: 'Whether this field is frozen (immutable)'
+    description: 'Whether field is frozen (immutable)',
   })
   frozen: MaybeUndefined<boolean> = UNDEFINED;
 
   @Field({
-    type: 'string',
-    description: 'Alias for the field name'
+    description: 'Alias name for the field',
   })
   alias: MaybeUndefined<string> = UNDEFINED;
 
   @Field({
-    type: 'number',
-    description: 'Priority for alias resolution'
+    description: 'Priority when multiple aliases exist',
   })
   aliasPriority: MaybeUndefined<number> = UNDEFINED;
 
   @Field({
-    type: 'string',
-    description: 'Name of the field',
-    required: true
+    description: 'Field name',
+    required: true,
+    exclude: true,
   })
   name!: string;
 
   @Field({
-    type: 'any',
-    description: 'Type annotation for the field'
+    description: 'Field type annotation',
+    exclude: true,
   })
   annotation: MaybeUndefined<any> = UNDEFINED;
 
   @Field({
-    type: 'function',
-    description: 'Validator function for the field'
+    description: 'Field validator function',
+    exclude: true,
   })
   validator: MaybeUndefined<Callable> = UNDEFINED;
 
   @Field({
-    type: 'object',
-    description: 'Additional arguments for the validator',
-    defaultFactory: () => ({})
+    description: 'Validator function kwargs',
+    defaultFactory: () => ({}),
+    exclude: true,
   })
   validatorKwargs: Dict = {};
 
   /**
-   * Get the field information for use in model creation
+   * Get field info object for use with Field decorator
    */
-  public get fieldInfo(): Dict {
-    const info: Dict = {};
-    const dump = this.cleanDump();
-
-    // Copy all non-undefined values
-    for (const [key, value] of Object.entries(dump)) {
-      if (value !== UNDEFINED) {
-        info[key] = value;
-      }
-    }
-
-    // Set annotation if provided
-    if (this.annotation !== UNDEFINED) {
-      info.type = this.annotation;
-    }
-
-    return info;
+  get fieldInfo(): FieldInfo {
+    const cleanData = this.cleanDump();
+    const annotation = this.annotation !== UNDEFINED ? this.annotation : Object;
+    const fieldObj: FieldInfo = {
+      ...cleanData,
+      type: annotation,
+    };
+    return fieldObj;
   }
 
   /**
-   * Get the field validator configuration
+   * Get field validator configuration
    */
-  public get fieldValidator(): Dict | null {
+  get fieldValidator(): Dict<Callable> | null {
     if (this.validator === UNDEFINED) {
       return null;
     }
 
     const kwargs = this.validatorKwargs || {};
     return {
-      [`${this.name}_validator`]: {
-        validator: this.validator,
-        ...kwargs
+      [`${this.name}_validator`]: (value: any) => {
+        return (this.validator as Callable)(value, kwargs);
       }
     };
-  }
-
-  /**
-   * Create a new field model instance
-   */
-  constructor(data: Dict = {}) {
-    super(data);
-    if (!data.name) {
-      throw new Error('Field name is required');
-    }
   }
 }

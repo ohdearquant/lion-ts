@@ -1,147 +1,204 @@
+/**
+ * Options for merging nested structures
+ */
+export interface NMergeOptions {
+  /** If true, overwrite existing keys in dictionaries */
+  overwrite?: boolean;
+  /** Enable unique key generation for duplicate keys by appending a sequence number */
+  dictSequence?: boolean;
+  /** Sort the resulting list after merging (only affects arrays) */
+  sortList?: boolean;
+  /** Custom sorting function for the merged list */
+  customSort?: (a: unknown, b: unknown) => number;
+}
 
-def nmerge(
-    nested_structure: Sequence[dict[str, Any] | list[Any]],
-    /,
-    *,
-    overwrite: bool = False,
-    dict_sequence: bool = False,
-    sort_list: bool = False,
-    custom_sort: Callable[[Any], Any] | None = None,
-) -> dict[str, Any] | list[Any]:
-    """
-    Merge multiple dictionaries, lists, or sequences into a unified structure.
+/**
+ * Type guard to check if a value is a plain object
+ */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && 
+         value !== null && 
+         !Array.isArray(value) &&
+         Object.getPrototypeOf(value) === Object.prototype;
+}
 
-    Args:
-        nested_structure: A sequence containing dictionaries, lists, or other
-            iterable objects to merge.
-        overwrite: If True, overwrite existing keys in dictionaries with
-            those from subsequent dictionaries.
-        dict_sequence: Enables unique key generation for duplicate keys by
-            appending a sequence number. Applicable only if `overwrite` is
-            False.
-        sort_list: When True, sort the resulting list after merging. It does
-            not affect dictionaries.
-        custom_sort: An optional callable that defines custom sorting logic
-            for the merged list.
+/**
+ * Deep merge two dictionaries recursively
+ */
+function deepMergeDicts(
+  dict1: Record<string, unknown>,
+  dict2: Record<string, unknown>,
+  overwrite: boolean
+): Record<string, unknown> {
+  const result = { ...dict1 };
 
-    Returns:
-        A merged dictionary or list, depending on the types present in
-        `nested_structure`.
+  for (const [key, value] of Object.entries(dict2)) {
+    if (key in result) {
+      if (isPlainObject(result[key]) && isPlainObject(value)) {
+        result[key] = deepMergeDicts(
+          result[key] as Record<string, unknown>,
+          value,
+          overwrite
+        );
+      } else if (overwrite) {
+        result[key] = value;
+      } else if (Array.isArray(result[key]) && Array.isArray(value)) {
+        // If both are arrays, preserve array structure
+        result[key] = [(result[key] as unknown[]), value];
+      } else if (Array.isArray(result[key])) {
+        // If result is already an array, append value
+        (result[key] as unknown[]).push(value);
+      } else if (Array.isArray(value)) {
+        // If value is an array, prepend existing value
+        result[key] = [result[key], value];
+      } else {
+        // Convert to array
+        result[key] = [result[key], value];
+      }
+    } else {
+      result[key] = value;
+    }
+  }
 
-    Raises:
-        TypeError: If `nested_structure` contains objects of incompatible
-            types that cannot be merged.
-    """
-    if not isinstance(nested_structure, list):
-        raise TypeError("Please input a list")
-    if is_homogeneous(nested_structure, dict):
-        return _merge_dicts(nested_structure, overwrite, dict_sequence)
-    elif is_homogeneous(nested_structure, list):
-        return _merge_sequences(nested_structure, sort_list, custom_sort)
-    else:
-        raise TypeError(
-            "All items in the input list must be of the same type, "
-            "either dict, list, or Iterable."
-        )
+  return result;
+}
 
+/**
+ * Merge multiple dictionaries into a single dictionary
+ */
+function mergeDicts(
+  dicts: Record<string, unknown>[],
+  dictUpdate: boolean,
+  dictSequence: boolean
+): Record<string, unknown> {
+  const mergedDict: Record<string, unknown> = {};
+  const sequenceCounters: Record<string, number> = {};
 
-def _deep_merge_dicts(dict1: dict[str, Any], dict2: dict[str, Any]) -> dict[str, Any]:
-    """
-    Recursively merges two dictionaries, combining values where keys overlap.
+  for (const dict of dicts) {
+    for (const [key, value] of Object.entries(dict)) {
+      if (!(key in mergedDict) || dictUpdate) {
+        if (key in mergedDict && isPlainObject(mergedDict[key]) && isPlainObject(value)) {
+          mergedDict[key] = deepMergeDicts(
+            mergedDict[key] as Record<string, unknown>,
+            value,
+            dictUpdate
+          );
+        } else {
+          mergedDict[key] = value;
+        }
+      } else if (dictSequence) {
+        sequenceCounters[key] = (sequenceCounters[key] || 0) + 1;
+        const newKey = `${key}${sequenceCounters[key]}`;
+        mergedDict[newKey] = value;
+      } else if (isPlainObject(mergedDict[key]) && isPlainObject(value)) {
+        mergedDict[key] = deepMergeDicts(
+          mergedDict[key] as Record<string, unknown>,
+          value,
+          false
+        );
+      } else if (Array.isArray(mergedDict[key]) && Array.isArray(value)) {
+        // If both are arrays, preserve array structure
+        mergedDict[key] = [(mergedDict[key] as unknown[]), value];
+      } else if (Array.isArray(mergedDict[key])) {
+        // If result is already an array, append value
+        (mergedDict[key] as unknown[]).push(value);
+      } else if (Array.isArray(value)) {
+        // If value is an array, prepend existing value
+        mergedDict[key] = [mergedDict[key], value];
+      } else {
+        // Convert to array
+        mergedDict[key] = [mergedDict[key], value];
+      }
+    }
+  }
 
-    Args:
-        dict1: The first dictionary.
-        dict2: The second dictionary.
+  return mergedDict;
+}
 
-    Returns:
-        The merged dictionary.
-    """
-    for key in dict2:
-        if key in dict1:
-            if isinstance(dict1[key], dict) and isinstance(dict2[key], dict):
-                _deep_merge_dicts(dict1[key], dict2[key])
-            else:
-                if not isinstance(dict1[key], list):
-                    dict1[key] = [dict1[key]]
-                dict1[key].append(dict2[key])
-        else:
-            dict1[key] = dict2[key]
-    return dict1
+/**
+ * Merge multiple arrays into a single array
+ */
+function mergeArrays(
+  arrays: unknown[][],
+  sortList: boolean,
+  customSort?: (a: unknown, b: unknown) => number
+): unknown[] {
+  let result = arrays.flat();
 
+  if (sortList) {
+    if (customSort) {
+      result.sort(customSort);
+    } else {
+      result.sort((a, b) => {
+        const aStr = String(a);
+        const bStr = String(b);
+        return aStr.localeCompare(bStr);
+      });
+    }
+  }
 
-def _merge_dicts(
-    iterables: list[dict[str, Any]],
-    dict_update: bool,
-    dict_sequence: bool,
-) -> dict[str, Any]:
-    """
-    Merges a list of dictionaries into a single dictionary, with options for
-    handling duplicate keys and sequences.
+  return result;
+}
 
-    Args:
-        iterables: A list of dictionaries to merge.
-        dict_update: If True, overwrite existing keys in dictionaries
-            with those from subsequent dictionaries.
-        dict_sequence: Enables unique key generation for duplicate keys
-            by appending a sequence number
+/**
+ * Merge multiple dictionaries, lists, or sequences into a unified structure.
+ * 
+ * @param structures Array of structures to merge
+ * @param options Optional configuration:
+ *   - overwrite: If true, overwrite existing keys in dictionaries
+ *   - dictSequence: Enable unique key generation for duplicate keys
+ *   - sortList: Sort the resulting list after merging
+ *   - customSort: Custom sorting function for the merged list
+ * @returns Merged structure (dictionary or array)
+ * 
+ * @example
+ * ```typescript
+ * nmerge([{ a: 1 }, { b: 2 }]); // { a: 1, b: 2 }
+ * nmerge([{ a: 1 }, { a: 2 }], { overwrite: true }); // { a: 2 }
+ * nmerge([{ a: 1 }, { a: 2 }], { dictSequence: true }); // { a: 1, a1: 2 }
+ * nmerge([[1, 3], [2, 4]], { sortList: true }); // [1, 2, 3, 4]
+ * ```
+ */
+export function nmerge<T extends Record<string, unknown> | unknown[]>(
+  structures: T[],
+  options: NMergeOptions = {}
+): T extends Record<string, unknown> ? Record<string, unknown> : unknown[] {
+  const {
+    overwrite = false,
+    dictSequence = false,
+    sortList = false,
+    customSort
+  } = options;
 
-    Returns:
-        The merged dictionary.
-    """
-    merged_dict = {}  # {'a': [1, 2]}
-    sequence_counters = defaultdict(int)
-    list_values = {}
+  if (!Array.isArray(structures)) {
+    throw new TypeError('Input must be an array');
+  }
 
-    for d in iterables:  # [{'a': [1, 2]}, {'a': [3, 4]}]
-        for key, value in d.items():  # {'a': [3, 4]}
-            if key not in merged_dict or dict_update:
-                if (
-                    key in merged_dict
-                    and isinstance(merged_dict[key], dict)
-                    and isinstance(value, dict)
-                ):
-                    _deep_merge_dicts(merged_dict[key], value)
-                else:
-                    merged_dict[key] = value  # {'a': [1, 2]}
-                    if isinstance(value, list):
-                        list_values[key] = True
-            elif dict_sequence:
-                sequence_counters[key] += 1
-                new_key = f"{key}{sequence_counters[key]}"
-                merged_dict[new_key] = value
-            else:
-                if not isinstance(merged_dict[key], list) or list_values.get(
-                    key, False
-                ):
-                    merged_dict[key] = [merged_dict[key]]
-                merged_dict[key].append(value)
+  // Handle empty input
+  if (structures.length === 0) {
+    return (Array.isArray(structures[0]) ? [] : {}) as any;
+  }
 
-    return merged_dict
+  // Check if all items are dictionaries
+  if (structures.every(isPlainObject)) {
+    return mergeDicts(
+      structures as Record<string, unknown>[],
+      overwrite,
+      dictSequence
+    ) as T extends Record<string, unknown> ? Record<string, unknown> : unknown[];
+  }
 
+  // Check if all items are arrays
+  if (structures.every(Array.isArray)) {
+    return mergeArrays(
+      structures as unknown[][],
+      sortList,
+      customSort
+    ) as T extends Record<string, unknown> ? Record<string, unknown> : unknown[];
+  }
 
-def _merge_sequences(
-    iterables: list[list[Any]],
-    sort_list: bool,
-    custom_sort: Callable[[Any], Any] | None = None,
-) -> list[Any]:
-    """
-    Merges a list of lists into a single list, with options for sorting and
-    custom sorting logic.
-
-    Args:
-        iterables: A list of lists to merge.
-        sort_list: When True, sort the resulting list after merging.
-        custom_sort: An optional callable that defines custom sorting logic
-            for the merged list.
-
-    Returns:
-        The merged list.
-    """
-    merged_list = list(chain(*iterables))
-    if sort_list:
-        if custom_sort:
-            return sorted(merged_list, key=custom_sort)
-        else:
-            return sorted(merged_list, key=lambda x: (isinstance(x, str), x))
-    return merged_list
-
+  throw new TypeError(
+    'All items in the input array must be of the same type, ' +
+    'either objects or arrays.'
+  );
+}

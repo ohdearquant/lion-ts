@@ -1,7 +1,7 @@
 /**
  * Type for any object with string keys
  */
-type AnyObject = { [key: string]: any };
+export type AnyObject = { [key: string]: any };
 
 /**
  * Recursively merge two dictionaries, updating values instead of overwriting.
@@ -18,17 +18,17 @@ type AnyObject = { [key: string]: any };
  * // { a: 1, b: { c: 2, d: 3 } }
  * ```
  */
-export function deepUpdate<T extends AnyObject>(
-    original: T,
-    update: Partial<T>
-): T {
+export function deepUpdate(
+    original: AnyObject,
+    update: Partial<AnyObject>
+): AnyObject {
     // Handle null/undefined cases
     if (!update || typeof update !== 'object') {
         return original;
     }
 
     if (!original || typeof original !== 'object') {
-        return update as T;
+        return update;
     }
 
     // Create a copy to avoid modifying the original
@@ -53,7 +53,7 @@ export function deepUpdate<T extends AnyObject>(
         }
     }
 
-    return result as T;
+    return result;
 }
 
 /**
@@ -82,9 +82,9 @@ function isPlainObject(value: unknown): value is AnyObject {
  * // { a: 1, b: { c: 2, d: 3, e: 4 } }
  * ```
  */
-export function deepUpdateAll<T extends AnyObject>(
-    target: T,
-    ...sources: Partial<T>[]
-): T {
+export function deepUpdateAll(
+    target: AnyObject,
+    ...sources: Partial<AnyObject>[]
+): AnyObject {
     return sources.reduce((acc, source) => deepUpdate(acc, source), target);
 }

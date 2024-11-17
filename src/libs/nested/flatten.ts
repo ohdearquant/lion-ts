@@ -1,240 +1,111 @@
-/**
- * Options for flattening nested structures
- */
 export interface FlattenOptions {
-    /** Separator for flattened keys */
-    sep?: string;
-    /** Convert all keys to strings */
-    coerceKeys?: boolean;
-    /** Handle arrays dynamically based on content */
-    dynamic?: boolean;
-    /** How to handle sequences (arrays) */
-    coerceSequence?: 'dict' | 'list' | null;
-    /** Maximum depth to flatten */
-    maxDepth?: number;
+  sep?: string;
+  maxDepth?: number;
+  dictOnly?: boolean;
+  inplace?: boolean;
+  coerceKeys?: boolean;
+  dynamic?: boolean;
+  coerceSequence?: 'dict' | 'list' | null;
 }
 
 /**
- * Type guard for primitive values
- */
-function isPrimitive(value: unknown): boolean {
-    return value === null ||
-           value === undefined ||
-           typeof value === 'string' ||
-           typeof value === 'number' ||
-           typeof value === 'boolean';
-}
-
-/**
- * Type guard for plain objects
- */
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-    return typeof value === 'object' &&
-           value !== null &&
-           !Array.isArray(value) &&
-           Object.getPrototypeOf(value) === Object.prototype;
-}
-
-/**
- * Flatten a nested object or array structure into a flat dictionary.
+ * Flatten a nested structure into a single-level dictionary.
  * 
- * @param data - Object or array to flatten
- * @param options - Flattening options
+ * @param input The nested structure to flatten
+ * @param options Optional configuration:
+ *   - sep: Separator for joining keys (default: '|')
+ *   - maxDepth: Maximum depth to flatten (default: unlimited)
+ *   - dictOnly: Only flatten dictionary structures (default: false)
+ *   - inplace: Modify input object in place (default: false)
+ *   - coerceKeys: Convert non-string keys to strings (default: false)
+ *   - dynamic: Allow dynamic key generation (default: false)
+ *   - coerceSequence: How to handle sequences ('dict', 'list', or null) (default: null)
  * @returns Flattened dictionary
- * 
- * @example
- * ```typescript
- * const nested = {
- *     a: 1,
- *     b: {
- *         c: 2,
- *         d: [3, 4],
- *         e: { f: 5 }
- *     }
- * };
- * 
- * flatten(nested);
- * // {
- * //     'a': 1,
- * //     'b|c': 2,
- * //     'b|d|0': 3,
- * //     'b|d|1': 4,
- * //     'b|e|f': 5
- * // }
- * ```
+ * @throws {Error} If input is null or has invalid key types
  */
 export function flatten(
-    data: unknown,
-    options: FlattenOptions = {}
-): Record<string, unknown> {
-    const {
-        sep = '|',
-        coerceKeys = true,
-        dynamic = true,
-        coerceSequence = null,
-        maxDepth = undefined
-    } = options;
+  input: any,
+  options: FlattenOptions = {}
+): Record<string, any> {
+  const {
+    sep = '|',
+    maxDepth = undefined,
+    dictOnly = false,
+    inplace = false,
+    coerceKeys = false,
+    dynamic = false,
+    coerceSequence = null,
+  } = options;
 
-    const result: Record<string, unknown> = {};
+  if (input === null || input === undefined) {
+    throw new Error('Cannot flatten null objects');
+  }
 
-    function flattenHelper(
-        obj: unknown,
-        prefix: string[] = [],
-        depth: number = 0
-    ): void {
-        // Check depth limit
-        if (maxDepth !== undefined && depth > maxDepth) {
-            const key = prefix.join(sep);
-            result[key] = obj;
-            return;
-        }
+  if (inplace && !isPlainObject(input)) {
+    throw new Error("Object must be a dictionary when 'inplace' is True");
+  }
 
-        // Handle null/undefined
-        if (obj === null || obj === undefined) {
-            const key = prefix.join(sep);
-            result[key] = obj;
-            return;
-        }
+  const result: Record<string, any> = {};
 
-        // Handle arrays
-        if (Array.isArray(obj)) {
-            if (obj.length === 0) {
-                const key = prefix.join(sep);
-                result[key] = obj;
-                return;
-            }
-
-            if (coerceSequence === 'dict') {
-                obj.forEach((item, index) => {
-                    flattenHelper(item, [...prefix, String(index)], depth + 1);
-                });
-            } else if (coerceSequence === 'list') {
-                const key = prefix.join(sep);
-                result[key] = obj;
-            } else {
-                // Handle based on content type
-                const allPrimitive = obj.every(isPrimitive);
-                if (allPrimitive || !dynamic) {
-                    const key = prefix.join(sep);
-                    result[key] = obj;
-                } else {
-                    obj.forEach((item, index) => {
-                        flattenHelper(item, [...prefix, String(index)], depth + 1);
-                    });
-                }
-            }
-            return;
-        }
-
-        // Handle objects
-        if (isPlainObject(obj)) {
-            const entries = Object.entries(obj);
-            if (entries.length === 0) {
-                const key = prefix.join(sep);
-                result[key] = obj;
-                return;
-            }
-
-            entries.forEach(([key, value]) => {
-                const newKey = coerceKeys ? String(key) : key;
-                flattenHelper(value, [...prefix, newKey], depth + 1);
-            });
-            return;
-        }
-
-        // Handle primitive values
-        const key = prefix.join(sep);
-        result[key] = obj;
+  function flattenRecursive(obj: any, prefix: string = '', depth: number = 0): void {
+    if (maxDepth !== undefined && depth >= maxDepth) {
+      result[prefix] = obj;
+      return;
     }
 
-    flattenHelper(data);
-    return result;
+    if (Array.isArray(obj) && !dictOnly) {
+      if (obj.length === 0) {
+        if (prefix) result[prefix] = obj;
+      } else {
+        obj.forEach((item, index) => {
+          const newPrefix = prefix ? `${prefix}${sep}${index}` : `${index}`;
+          if (isNestedStructure(item) && (!dictOnly || isPlainObject(item))) {
+            flattenRecursive(item, newPrefix, depth + 1);
+          } else {
+            result[newPrefix] = item;
+          }
+        });
+      }
+    } else if (isPlainObject(obj)) {
+      if (Object.keys(obj).length === 0) {
+        if (prefix) result[prefix] = obj;
+      } else {
+        for (const key of Object.keys(obj)) {
+          // Check if key is numeric
+          if (!coerceKeys && !isNaN(Number(key)) && key !== '') {
+            throw new Error('Unsupported key type: number. Only string keys are acceptable');
+          }
+          const value = obj[key];
+          const newPrefix = prefix ? `${prefix}${sep}${key}` : key;
+          if (isNestedStructure(value) && (!dictOnly || isPlainObject(value))) {
+            flattenRecursive(value, newPrefix, depth + 1);
+          } else {
+            result[newPrefix] = value;
+          }
+        }
+      }
+    } else {
+      if (prefix) result[prefix] = obj;
+    }
+  }
+
+  flattenRecursive(input);
+
+  if (inplace && isPlainObject(input)) {
+    // Type assertion since we know input is a plain object at this point
+    const inputObj = input as Record<string, any>;
+    Object.keys(inputObj).forEach(key => delete inputObj[key]);
+    Object.assign(inputObj, result);
+    return inputObj;
+  }
+
+  return result;
 }
 
-/**
- * Unflatten a dictionary back into a nested structure
- * 
- * @param data - Flattened dictionary
- * @param options - Unflattening options
- * @returns Nested structure
- * 
- * @example
- * ```typescript
- * const flat = {
- *     'a': 1,
- *     'b|c': 2,
- *     'b|d|0': 3,
- *     'b|d|1': 4
- * };
- * 
- * unflatten(flat);
- * // {
- * //     a: 1,
- * //     b: {
- * //         c: 2,
- * //         d: [3, 4]
- * //     }
- * // }
- * ```
- */
-export function unflatten(
-    data: Record<string, unknown>,
-    options: { sep?: string } = {}
-): unknown {
-    const { sep = '|' } = options;
-    const result: Record<string, unknown> = {};
+function isPlainObject(obj: any): boolean {
+  return obj !== null && typeof obj === 'object' && !Array.isArray(obj);
+}
 
-    for (const [key, value] of Object.entries(data)) {
-        const parts = key.split(sep);
-        let current = result;
-
-        for (let i = 0; i < parts.length - 1; i++) {
-            const part = parts[i];
-            const nextPart = parts[i + 1];
-            const isNextNumeric = /^\d+$/.test(nextPart);
-
-            if (!(part in current)) {
-                current[part] = isNextNumeric ? [] : {};
-            }
-
-            const next = current[part];
-            if (typeof next === 'object' && next !== null) {
-                current = next as Record<string, unknown>;
-            }
-        }
-
-        const lastPart = parts[parts.length - 1];
-        current[lastPart] = value;
-    }
-
-    // Convert numeric arrays back to proper arrays
-    function convertArrays(obj: Record<string, unknown>): unknown {
-        if (!isPlainObject(obj)) {
-            return obj;
-        }
-
-        const entries = Object.entries(obj);
-        const isNumericArray = entries.every(([key]) => /^\d+$/.test(key));
-
-        if (isNumericArray) {
-            const maxIndex = Math.max(...entries.map(([key]) => parseInt(key, 10)));
-            const arr = new Array(maxIndex + 1);
-            for (const [key, value] of entries) {
-                arr[parseInt(key, 10)] = isPlainObject(value) 
-                    ? convertArrays(value as Record<string, unknown>)
-                    : value;
-            }
-            return arr;
-        }
-
-        const converted: Record<string, unknown> = {};
-        for (const [key, value] of entries) {
-            converted[key] = isPlainObject(value)
-                ? convertArrays(value as Record<string, unknown>)
-                : value;
-        }
-        return converted;
-    }
-
-    return convertArrays(result);
+function isNestedStructure(value: any): boolean {
+  return value !== null && typeof value === 'object' && !(value instanceof Set) && !(value instanceof Map);
 }
