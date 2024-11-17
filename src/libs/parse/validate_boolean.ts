@@ -1,91 +1,84 @@
+import { TRUE_VALUES, FALSE_VALUES } from '../../constants';
 
-def validate_boolean(x: Any, /) -> bool:
-    """
-    Forcefully validate and convert the input into a boolean value.
+/**
+ * Forcefully validate and convert the input into a boolean value.
+ * 
+ * This function attempts to convert various input types to a boolean value.
+ * It recognizes common string representations of true and false, as well
+ * as numeric values. The conversion is case-insensitive.
+ * 
+ * @param x - The input to be converted to boolean. Can be:
+ *   - Boolean: returned as-is
+ *   - Number (including complex): converted using JavaScript's bool rules
+ *   - String: converted based on common boolean representations
+ *   - null or undefined: raises TypeError
+ *   - Other types: converted to string and then evaluated
+ * @returns The boolean representation of the input.
+ * @throws Error if the input cannot be unambiguously converted to a boolean value.
+ * @throws TypeError if the input type is unsupported or null/undefined.
+ * 
+ * @example
+ * ```typescript
+ * validateBoolean(true); // true
+ * validateBoolean("yes"); // true
+ * validateBoolean("OFF"); // false
+ * validateBoolean(1); // true
+ * validateBoolean(0); // false
+ * validateBoolean(1 + 1j); // true
+ * ```
+ * 
+ * @remarks
+ * - String matching is case-insensitive
+ * - Leading/trailing whitespace is stripped
+ * - Numeric values follow JavaScript's Boolean() rules
+ * - null or undefined values raise TypeError
+ * - Empty strings raise Error
+ */
+export function validateBoolean(x: any): boolean {
+  if (x === null || x === undefined) {
+    throw new TypeError("Cannot convert null or undefined to boolean");
+  }
 
-    This function attempts to convert various input types to a boolean value.
-    It recognizes common string representations of true and false, as well
-    as numeric values. The conversion is case-insensitive.
+  if (typeof x === 'boolean') {
+    return x;
+  }
 
-    Args:
-        x: The input to be converted to boolean. Can be:
-           - Boolean: returned as-is
-           - Number (including complex): converted using Python's bool rules
-           - String: converted based on common boolean representations
-           - None: raises TypeError
-           - Other types: converted to string and then evaluated
+  // Handle all numeric types using JavaScript's Boolean
+  if (typeof x === 'number') {
+    return Boolean(x);
+  }
 
-    Returns:
-        bool: The boolean representation of the input.
+  // Convert to string if not already a string
+  if (typeof x !== 'string') {
+    try {
+      x = String(x);
+    } catch (e) {
+      throw new TypeError(`Cannot convert ${typeof x} to boolean: ${e}`);
+    }
+  }
 
-    Raises:
-        ValueError: If the input cannot be unambiguously converted to a boolean value.
-        TypeError: If the input type is unsupported or None.
+  // Handle string inputs
+  const xCleaned = x.trim().toLowerCase();
 
-    Examples:
-        >>> validate_boolean(True)
-        True
-        >>> validate_boolean("yes")
-        True
-        >>> validate_boolean("OFF")
-        False
-        >>> validate_boolean(1)
-        True
-        >>> validate_boolean(0j)
-        False
-        >>> validate_boolean(1 + 1j)
-        True
+  if (!xCleaned) {
+    throw new Error("Cannot convert empty string to boolean");
+  }
 
-    Notes:
-        - String matching is case-insensitive
-        - Leading/trailing whitespace is stripped
-        - Numeric values follow Python's bool() rules
-        - Complex numbers: bool(0j) is False, bool(any other complex) is True
-        - None values raise TypeError
-        - Empty strings raise ValueError
-    """
-    if x is None:
-        raise TypeError("Cannot convert None to boolean")
+  if (TRUE_VALUES.has(xCleaned)) {
+    return true;
+  }
 
-    if isinstance(x, bool):
-        return x
+  if (FALSE_VALUES.has(xCleaned)) {
+    return false;
+  }
 
-    # Handle all numeric types (including complex) using Python's bool
-    if isinstance(x, (int, float, Complex)):
-        return bool(x)
-
-    # Convert to string if not already a string
-    if not isinstance(x, str):
-        try:
-            x = str(x)
-        except Exception as e:
-            raise TypeError(f"Cannot convert {type(x)} to boolean: {str(e)}")
-
-    # Handle string inputs
-    x_cleaned = str(x).strip().lower()
-
-    if not x_cleaned:
-        raise ValueError("Cannot convert empty string to boolean")
-
-    if x_cleaned in TRUE_VALUES:
-        return True
-
-    if x_cleaned in FALSE_VALUES:
-        return False
-
-    # Try numeric conversion as a last resort
-    try:
-        # Try to evaluate as a literal if it looks like a complex number
-        if "j" in x_cleaned:
-            try:
-                return bool(complex(x_cleaned))
-            except ValueError:
-                pass
-        return bool(float(x_cleaned))
-    except ValueError:
-        pass
-
-    raise ValueError(
-        f"Cannot convert '{x}' to boolean. Valid true values are: {sorted(TRUE_VALUES)}, "
-        f"valid false values are: {sorted(FALSE_VALUES)}"
-    )
+  // Try numeric conversion as a last resort
+  try {
+    return Boolean(parseFloat(xCleaned));
+  } catch {
+    throw new Error(
+      `Cannot convert '${x}' to boolean. Valid true values are: ${[...TRUE_VALUES]}, ` +
+      `valid false values are: ${[...FALSE_VALUES]}`
+    );
+  }
+}
