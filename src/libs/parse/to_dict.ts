@@ -1,56 +1,58 @@
-/**
- * Options for dictionary conversion
- */
-interface DictOptions {
-    useModelDump?: boolean;
-    fuzzyParse?: boolean;
-    suppress?: boolean;
-    strType?: 'json' | 'xml' | null;
-    parser?: (str: string) => Record<string, any>;
-    recursive?: boolean;
-    maxRecursiveDepth?: number;
-    excludeTypes?: any[];
-    recursivePythonOnly?: boolean;
-}
+import { fuzzyParseJson } from './fuzzy_parse_json';
+import { xmlToDict, xmlToDictSync } from './xml_parser';
+import { ToDictOptions, ParseError, StringKeyedDict } from './types';
 
 /**
  * Convert various input types to a dictionary
+ * 
+ * @param input - The input to convert to a dictionary
+ * @param options - Configuration options for dictionary conversion
+ * @returns A dictionary representation of the input
+ * 
+ * @example
+ * ```typescript
+ * toDict('{"a": 1}') // { a: 1 }
+ * toDict(new Map([['a', 1]])) // { a: 1 }
+ * toDict('<root><a>1</a></root>', { strType: 'xml' }) // { a: '1' }
+ * ```
  */
 export function toDict(
     input: any,
-    options: DictOptions = {}
-): Record<string, any> {
+    options: ToDictOptions = {}
+): StringKeyedDict {
     const {
-        useModelDump = true,
+        useDictDump = true,
         fuzzyParse = false,
-        suppress = false,
         strType = 'json',
-        parser = null,
+        parser = undefined,
         recursive = false,
-        maxRecursiveDepth = null,
+        maxRecursiveDepth = 5,
         excludeTypes = [],
         recursivePythonOnly = true,
+        suppress = false
     } = options;
 
     try {
         if (recursive) {
             return recursiveToDict(input, {
-                useModelDump,
+                useDictDump,
                 fuzzyParse,
                 strType,
                 parser,
                 maxRecursiveDepth,
                 excludeTypes,
                 recursiveCustomTypes: !recursivePythonOnly,
+                suppress
             });
         }
 
         return toDictCore(input, {
-            useModelDump,
+            useDictDump,
             fuzzyParse,
             strType,
             parser,
             excludeTypes,
+            suppress
         });
     } catch (error) {
         if (suppress) {
@@ -65,67 +67,72 @@ export function toDict(
  */
 function toDictCore(
     input: any,
-    options: DictOptions
-): Record<string, any> {
+    options: ToDictOptions
+): StringKeyedDict {
     const {
-        useModelDump,
-        fuzzyParse,
-        strType,
-        parser,
+        useDictDump = true,
+        fuzzyParse = false,
+        strType = 'json',
+        parser = undefined,
         excludeTypes = [],
+        suppress = false
     } = options;
 
-    // Handle excluded types
-    if (excludeTypes.length > 0 && excludeTypes.some(type => input instanceof type)) {
-        return input;
-    }
-
-    // Handle null/undefined
-    if (input == null) {
-        return {};
-    }
-
-    // Handle plain objects
-    if (isPlainObject(input)) {
-        return input;
-    }
-
-    // Handle model dump
-    if (useModelDump && typeof input?.modelDump === 'function') {
-        return input.modelDump();
-    }
-
-    // Handle string conversion
-    if (typeof input === 'string') {
-        if (fuzzyParse) {
-            return fuzzyParseJson(input);
+    try {
+        // Handle excluded types
+        if (excludeTypes.length > 0 && excludeTypes.some(type => input instanceof type)) {
+            return input;
         }
-        return stringToDict(input, strType, parser);
-    }
 
-    // Handle Maps
-    if (input instanceof Map) {
-        return Object.fromEntries(input);
-    }
+        // Handle null/undefined
+        if (input == null) {
+            return {};
+        }
 
-    // Handle Sets
-    if (input instanceof Set) {
-        return Array.from(input).reduce((acc, val) => {
-            acc[val] = val;
-            return acc;
-        }, {});
-    }
+        // Handle plain objects
+        if (isPlainObject(input)) {
+            return input;
+        }
 
-    // Handle Arrays and other iterables
-    if (Symbol.iterator in Object(input)) {
-        return Array.from(input).reduce((acc, val, idx) => {
-            acc[idx] = val;
-            return acc;
-        }, {});
-    }
+        // Handle model dump
+        if (useDictDump && typeof input?.modelDump === 'function') {
+            return input.modelDump();
+        }
 
-    // Handle generic objects
-    return convertGenericToDict(input);
+        // Handle string conversion
+        if (typeof input === 'string') {
+            return stringToDict(input, { strType, parser, fuzzyParse, suppress });
+        }
+
+        // Handle Maps
+        if (input instanceof Map) {
+            return Object.fromEntries(input);
+        }
+
+        // Handle Sets
+        if (input instanceof Set) {
+            return Array.from(input).reduce((acc: StringKeyedDict, val) => {
+                acc[String(val)] = val;
+                return acc;
+            }, {});
+        }
+
+        // Handle Arrays and other iterables
+        if (Symbol.iterator in Object(input)) {
+            return Array.from(input).reduce((acc: StringKeyedDict, val, idx) => {
+                acc[idx] = val;
+                return acc;
+            }, {});
+        }
+
+        // Handle generic objects
+        return convertGenericToDict(input);
+    } catch (error) {
+        if (suppress) {
+            return {};
+        }
+        throw error;
+    }
 }
 
 /**
@@ -133,20 +140,24 @@ function toDictCore(
  */
 function recursiveToDict(
     input: any,
-    options: DictOptions & { maxRecursiveDepth?: number }
+    options: ToDictOptions & { 
+        maxRecursiveDepth?: number;
+        recursiveCustomTypes?: boolean;
+    }
 ): any {
     const {
         maxRecursiveDepth = 5,
         recursiveCustomTypes = false,
+        suppress = false,
         ...rest
     } = options;
 
     if (!Number.isInteger(maxRecursiveDepth) || maxRecursiveDepth < 0) {
-        throw new Error('maxRecursiveDepth must be a non-negative integer');
+        throw new ParseError('maxRecursiveDepth must be a non-negative integer');
     }
 
     if (maxRecursiveDepth > 10) {
-        throw new Error('maxRecursiveDepth must be less than or equal to 10');
+        throw new ParseError('maxRecursiveDepth must be less than or equal to 10');
     }
 
     function recursiveHelper(value: any, depth: number): any {
@@ -154,42 +165,41 @@ function recursiveToDict(
             return value;
         }
 
-        // Handle strings
-        if (typeof value === 'string') {
-            try {
-                const parsed = toDictCore(value, rest);
+        try {
+            // Handle strings
+            if (typeof value === 'string') {
+                const parsed = toDictCore(value, { ...rest, suppress });
                 return recursiveHelper(parsed, depth + 1);
-            } catch {
-                return value;
             }
-        }
 
-        // Handle arrays
-        if (Array.isArray(value)) {
-            return value.map(item => recursiveHelper(item, depth + 1));
-        }
+            // Handle arrays
+            if (Array.isArray(value)) {
+                return value.map(item => recursiveHelper(item, depth + 1));
+            }
 
-        // Handle plain objects
-        if (isPlainObject(value)) {
-            return Object.fromEntries(
-                Object.entries(value).map(([k, v]) => [
-                    k,
-                    recursiveHelper(v, depth + 1)
-                ])
-            );
-        }
+            // Handle plain objects
+            if (isPlainObject(value)) {
+                return Object.fromEntries(
+                    Object.entries(value).map(([k, v]) => [
+                        k,
+                        recursiveHelper(v, depth + 1)
+                    ])
+                );
+            }
 
-        // Handle custom types
-        if (recursiveCustomTypes) {
-            try {
-                const converted = toDictCore(value, rest);
+            // Handle custom types
+            if (recursiveCustomTypes) {
+                const converted = toDictCore(value, { ...rest, suppress });
                 return recursiveHelper(converted, depth + 1);
-            } catch {
+            }
+
+            return value;
+        } catch (error) {
+            if (suppress) {
                 return value;
             }
+            throw error;
         }
-
-        return value;
     }
 
     return recursiveHelper(input, 0);
@@ -200,55 +210,79 @@ function recursiveToDict(
  */
 function stringToDict(
     input: string,
-    strType: 'json' | 'xml' | null = 'json',
-    parser: ((str: string) => Record<string, any>) | null = null
-): Record<string, any> {
-    if (!input) return {};
+    options: {
+        strType?: 'json' | 'xml' | null;
+        parser?: (str: string) => StringKeyedDict;
+        fuzzyParse?: boolean;
+        suppress?: boolean;
+    }
+): StringKeyedDict {
+    const {
+        strType = 'json',
+        parser = undefined,
+        fuzzyParse = false,
+        suppress = false
+    } = options;
 
-    if (strType === 'json') {
-        try {
-            return parser ? parser(input) : JSON.parse(input);
-        } catch (error) {
-            throw new Error('Failed to parse JSON string');
-        }
+    if (!input.trim()) {
+        return {};
     }
 
-    if (strType === 'xml') {
-        try {
-            return parser ? parser(input) : xmlToDict(input);
-        } catch (error) {
-            throw new Error('Failed to parse XML string');
+    try {
+        if (strType === 'json') {
+            if (parser) {
+                return parser(input);
+            }
+            return fuzzyParse ? fuzzyParseJson(input) : JSON.parse(input);
         }
-    }
 
-    throw new Error('Unsupported string type, must be "json" or "xml"');
+        if (strType === 'xml') {
+            if (parser) {
+                return parser(input);
+            }
+            return xmlToDictSync(input, { suppress });
+        }
+
+        throw new ParseError('Unsupported string type, must be "json" or "xml"');
+    } catch (error) {
+        if (suppress) {
+            return {};
+        }
+        throw error;
+    }
 }
 
 /**
  * Convert generic object to dictionary
  */
-function convertGenericToDict(input: any): Record<string, any> {
+function convertGenericToDict(input: any): StringKeyedDict {
     // Try common conversion methods
     const methods = ['toDict', 'dict', 'json', 'toJson'];
     for (const method of methods) {
         if (typeof input[method] === 'function') {
-            const result = input[method]();
-            return typeof result === 'string' ? 
-                   JSON.parse(result) : 
-                   result;
+            try {
+                const result = input[method]();
+                return typeof result === 'string' ? 
+                       JSON.parse(result) : 
+                       result;
+            } catch {
+                continue;
+            }
         }
     }
 
-    // Try __dict__ property
-    if (input.__dict__) {
+    // Try __dict__ property (Python-style objects)
+    if (input.__dict__ && typeof input.__dict__ === 'object') {
         return input.__dict__;
     }
 
     // Try direct conversion
     try {
-        return Object.fromEntries(input);
+        return Object.fromEntries(
+            Object.entries(input).filter(([key]) => !key.startsWith('_'))
+        );
     } catch {
-        throw new Error('Unable to convert input to dictionary');
+        throw new ParseError('Unable to convert input to dictionary');
     }
 }
 
@@ -256,26 +290,9 @@ function convertGenericToDict(input: any): Record<string, any> {
  * Check if value is a plain object
  */
 function isPlainObject(value: any): boolean {
-    return Object.prototype.toString.call(value) === '[object Object]';
-}
-
-/**
- * XML to dictionary conversion (placeholder)
- */
-function xmlToDict(xml: string): Record<string, any> {
-    // Implement XML parsing logic or use external library
-    throw new Error('XML parsing not implemented');
-}
-
-// Example usage:
-/*
-const data = {
-    name: 'John',
-    details: {
-        age: 30,
-        scores: [95, 87, 92]
+    if (value === null || typeof value !== 'object') {
+        return false;
     }
-};
-
-const dict = toDict(data, { recursive: true });
-*/
+    const proto = Object.getPrototypeOf(value);
+    return proto === Object.prototype || proto === null;
+}

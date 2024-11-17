@@ -1,160 +1,240 @@
+/**
+ * Options for flattening nested structures
+ */
+export interface FlattenOptions {
+    /** Separator for flattened keys */
+    sep?: string;
+    /** Convert all keys to strings */
+    coerceKeys?: boolean;
+    /** Handle arrays dynamically based on content */
+    dynamic?: boolean;
+    /** How to handle sequences (arrays) */
+    coerceSequence?: 'dict' | 'list' | null;
+    /** Maximum depth to flatten */
+    maxDepth?: number;
+}
 
-@overload
-def flatten(
-    nested_structure: T,
-    /,
-    *,
-    parent_key: tuple = (),
-    sep: str = "|",
-    coerce_keys: Literal[True] = True,
-    dynamic: bool = True,
-    coerce_sequence: Literal["dict", None] = None,
-    max_depth: int | None = None,
-) -> dict[str, Any] | None: ...
+/**
+ * Type guard for primitive values
+ */
+function isPrimitive(value: unknown): boolean {
+    return value === null ||
+           value === undefined ||
+           typeof value === 'string' ||
+           typeof value === 'number' ||
+           typeof value === 'boolean';
+}
 
+/**
+ * Type guard for plain objects
+ */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' &&
+           value !== null &&
+           !Array.isArray(value) &&
+           Object.getPrototypeOf(value) === Object.prototype;
+}
 
-@overload
-def flatten(
-    nested_structure: T,
-    /,
-    *,
-    parent_key: tuple = (),
-    sep: str = "|",
-    coerce_keys: Literal[False],
-    dynamic: bool = True,
-    coerce_sequence: Literal["dict", "list", None] = None,
-    max_depth: int | None = None,
-) -> dict[tuple, Any] | None: ...
+/**
+ * Flatten a nested object or array structure into a flat dictionary.
+ * 
+ * @param data - Object or array to flatten
+ * @param options - Flattening options
+ * @returns Flattened dictionary
+ * 
+ * @example
+ * ```typescript
+ * const nested = {
+ *     a: 1,
+ *     b: {
+ *         c: 2,
+ *         d: [3, 4],
+ *         e: { f: 5 }
+ *     }
+ * };
+ * 
+ * flatten(nested);
+ * // {
+ * //     'a': 1,
+ * //     'b|c': 2,
+ * //     'b|d|0': 3,
+ * //     'b|d|1': 4,
+ * //     'b|e|f': 5
+ * // }
+ * ```
+ */
+export function flatten(
+    data: unknown,
+    options: FlattenOptions = {}
+): Record<string, unknown> {
+    const {
+        sep = '|',
+        coerceKeys = true,
+        dynamic = true,
+        coerceSequence = null,
+        maxDepth = undefined
+    } = options;
 
+    const result: Record<string, unknown> = {};
 
-def flatten(
-    nested_structure: Any,
-    /,
-    *,
-    parent_key: tuple = (),
-    sep: str = "|",
-    coerce_keys: bool = True,
-    dynamic: bool = True,
-    coerce_sequence: Literal["dict", "list"] | None = None,
-    max_depth: int | None = None,
-) -> dict[tuple | str, Any] | None:
-    """Flatten a nested structure into a single-level dictionary.
+    function flattenHelper(
+        obj: unknown,
+        prefix: string[] = [],
+        depth: number = 0
+    ): void {
+        // Check depth limit
+        if (maxDepth !== undefined && depth > maxDepth) {
+            const key = prefix.join(sep);
+            result[key] = obj;
+            return;
+        }
 
-    Recursively traverses the input, creating keys that represent the path
-    to each value in the flattened result.
+        // Handle null/undefined
+        if (obj === null || obj === undefined) {
+            const key = prefix.join(sep);
+            result[key] = obj;
+            return;
+        }
 
-    Args:
-        nested_structure: The nested structure to flatten.
-        parent_key: Base key for the current recursion level. Default: ().
-        sep: Separator for joining keys. Default: "|".
-        coerce_keys: Join keys into strings if True, keep as tuples if False.
-            Default: True.
-        dynamic: Handle sequences (except strings) dynamically if True.
-            Default: True.
-        coerce_sequence: Force sequences to be treated as dicts or lists.
-            Options: "dict", "list", or None. Default: None.
-        max_depth: Maximum depth to flatten. None for complete flattening.
-            Default: None.
+        // Handle arrays
+        if (Array.isArray(obj)) {
+            if (obj.length === 0) {
+                const key = prefix.join(sep);
+                result[key] = obj;
+                return;
+            }
 
-    Returns:
-        A flattened dictionary with keys as tuples or strings (based on
-        coerce_keys) representing the path to each value.
+            if (coerceSequence === 'dict') {
+                obj.forEach((item, index) => {
+                    flattenHelper(item, [...prefix, String(index)], depth + 1);
+                });
+            } else if (coerceSequence === 'list') {
+                const key = prefix.join(sep);
+                result[key] = obj;
+            } else {
+                // Handle based on content type
+                const allPrimitive = obj.every(isPrimitive);
+                if (allPrimitive || !dynamic) {
+                    const key = prefix.join(sep);
+                    result[key] = obj;
+                } else {
+                    obj.forEach((item, index) => {
+                        flattenHelper(item, [...prefix, String(index)], depth + 1);
+                    });
+                }
+            }
+            return;
+        }
 
-    Raises:
-        ValueError: If coerce_sequence is "list" and coerce_keys is True.
+        // Handle objects
+        if (isPlainObject(obj)) {
+            const entries = Object.entries(obj);
+            if (entries.length === 0) {
+                const key = prefix.join(sep);
+                result[key] = obj;
+                return;
+            }
 
-    Example:
-        >>> nested = {"a": 1, "b": {"c": 2, "d": [3, 4]}}
-        >>> flatten(nested)
-        {'a': 1, 'b|c': 2, 'b|d|0': 3, 'b|d|1': 4}
+            entries.forEach(([key, value]) => {
+                const newKey = coerceKeys ? String(key) : key;
+                flattenHelper(value, [...prefix, newKey], depth + 1);
+            });
+            return;
+        }
 
-    Note:
-        - Preserves order of keys in dicts and indices in sequences.
-        - With dynamic=True, treats sequences (except strings) as nestable.
-        - coerce_sequence allows forcing sequence handling for homogeneity.
-    """
+        // Handle primitive values
+        const key = prefix.join(sep);
+        result[key] = obj;
+    }
 
-    if coerce_keys and coerce_sequence == "list":
-        raise ValueError("coerce_sequence cannot be 'list' when coerce_keys is True")
+    flattenHelper(data);
+    return result;
+}
 
-    coerce_sequence_to_list = None
-    coerce_sequence_to_dict = None
+/**
+ * Unflatten a dictionary back into a nested structure
+ * 
+ * @param data - Flattened dictionary
+ * @param options - Unflattening options
+ * @returns Nested structure
+ * 
+ * @example
+ * ```typescript
+ * const flat = {
+ *     'a': 1,
+ *     'b|c': 2,
+ *     'b|d|0': 3,
+ *     'b|d|1': 4
+ * };
+ * 
+ * unflatten(flat);
+ * // {
+ * //     a: 1,
+ * //     b: {
+ * //         c: 2,
+ * //         d: [3, 4]
+ * //     }
+ * // }
+ * ```
+ */
+export function unflatten(
+    data: Record<string, unknown>,
+    options: { sep?: string } = {}
+): unknown {
+    const { sep = '|' } = options;
+    const result: Record<string, unknown> = {};
 
-    if dynamic and coerce_sequence:
-        if coerce_sequence == "dict":
-            coerce_sequence_to_dict = True
-        elif coerce_sequence == "list":
-            coerce_sequence_to_list = True
+    for (const [key, value] of Object.entries(data)) {
+        const parts = key.split(sep);
+        let current = result;
 
-    return _flatten_iterative(
-        obj=nested_structure,
-        parent_key=parent_key,
-        sep=sep,
-        coerce_keys=coerce_keys,
-        dynamic=dynamic,
-        coerce_sequence_to_list=coerce_sequence_to_list,
-        coerce_sequence_to_dict=coerce_sequence_to_dict,
-        max_depth=max_depth,
-    )
+        for (let i = 0; i < parts.length - 1; i++) {
+            const part = parts[i];
+            const nextPart = parts[i + 1];
+            const isNextNumeric = /^\d+$/.test(nextPart);
 
+            if (!(part in current)) {
+                current[part] = isNextNumeric ? [] : {};
+            }
 
-def _flatten_iterative(
-    obj: Any,
-    parent_key: tuple,
-    sep: str,
-    coerce_keys: bool,
-    dynamic: bool,
-    coerce_sequence_to_list: bool = False,
-    coerce_sequence_to_dict: bool = False,
-    max_depth: int | None = None,
-) -> dict[tuple | str, Any]:
-    stack = deque([(obj, parent_key, 0)])
-    result = {}
+            const next = current[part];
+            if (typeof next === 'object' && next !== null) {
+                current = next as Record<string, unknown>;
+            }
+        }
 
-    while stack:
-        current_obj, current_key, depth = stack.pop()
+        const lastPart = parts[parts.length - 1];
+        current[lastPart] = value;
+    }
 
-        if max_depth is not None and depth >= max_depth:
-            result[_format_key(current_key, sep, coerce_keys)] = current_obj
-            continue
+    // Convert numeric arrays back to proper arrays
+    function convertArrays(obj: Record<string, unknown>): unknown {
+        if (!isPlainObject(obj)) {
+            return obj;
+        }
 
-        if isinstance(current_obj, Mapping):
-            for k, v in current_obj.items():
-                new_key = current_key + (k,)
-                if (
-                    v
-                    and isinstance(v, (Mapping, Sequence))
-                    and not isinstance(v, (str, bytes, bytearray))
-                ):
-                    stack.appendleft((v, new_key, depth + 1))
-                else:
-                    result[_format_key(new_key, sep, coerce_keys)] = v
+        const entries = Object.entries(obj);
+        const isNumericArray = entries.every(([key]) => /^\d+$/.test(key));
 
-        elif (
-            dynamic
-            and isinstance(current_obj, Sequence)
-            and not isinstance(current_obj, (str, bytes, bytearray))
-        ):
-            if coerce_sequence_to_dict:
-                dict_obj = {str(i): v for i, v in enumerate(current_obj)}
-                for k, v in dict_obj.items():
-                    new_key = current_key + (k,)
-                    stack.appendleft((v, new_key, depth + 1))
-            elif coerce_sequence_to_list:
-                for i, v in enumerate(current_obj):
-                    new_key = current_key + (i,)
-                    stack.appendleft((v, new_key, depth + 1))
-            else:
-                for i, v in enumerate(current_obj):
-                    new_key = current_key + (str(i),)
-                    stack.appendleft((v, new_key, depth + 1))
-        else:
-            result[_format_key(current_key, sep, coerce_keys)] = current_obj
+        if (isNumericArray) {
+            const maxIndex = Math.max(...entries.map(([key]) => parseInt(key, 10)));
+            const arr = new Array(maxIndex + 1);
+            for (const [key, value] of entries) {
+                arr[parseInt(key, 10)] = isPlainObject(value) 
+                    ? convertArrays(value as Record<string, unknown>)
+                    : value;
+            }
+            return arr;
+        }
 
-    return result
+        const converted: Record<string, unknown> = {};
+        for (const [key, value] of entries) {
+            converted[key] = isPlainObject(value)
+                ? convertArrays(value as Record<string, unknown>)
+                : value;
+        }
+        return converted;
+    }
 
-
-def _format_key(key: tuple, sep: str, coerce_keys: bool, /) -> tuple | str:
-if not key:
-    return key
-return sep.join(map(str, key)) if coerce_keys else key
+    return convertArrays(result);
+}

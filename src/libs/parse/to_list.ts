@@ -1,12 +1,4 @@
-/**
- * Options for list conversion
- */
-interface ListOptions {
-    flatten?: boolean;
-    dropna?: boolean;
-    unique?: boolean;
-    useValues?: boolean;
-}
+import { ToListOptions, ParseError } from './types';
 
 /**
  * Convert various input types to a list
@@ -14,133 +6,178 @@ interface ListOptions {
  * @param input - Input to convert to list
  * @param options - Conversion options
  * @returns Converted list
+ * 
+ * @example
+ * ```typescript
+ * toList('abc', { useValues: true }) // ['a', 'b', 'c']
+ * toList([1, [2, 3]], { flatten: true }) // [1, 2, 3]
+ * toList([1, null, 2], { dropna: true }) // [1, 2]
+ * ```
  */
 export function toList<T = any>(
     input: any,
-    options: ListOptions = {}
+    options: ToListOptions = {}
 ): T[] {
     const {
         flatten = false,
         dropna = false,
         unique = false,
-        useValues = false
+        useValues = false,
+        suppress = false
     } = options;
 
-    if (unique && !flatten) {
-        throw new Error('unique=true requires flatten=true');
+    try {
+        if (unique && !flatten) {
+            throw new ParseError('unique=true requires flatten=true');
+        }
+
+        // Initial conversion
+        let result = toListType<T>(input, useValues, suppress);
+
+        // Process list if needed
+        if (flatten || dropna) {
+            result = processList<T>(result, {
+                flatten,
+                dropna,
+                suppress
+            });
+        }
+
+        // Make unique if requested
+        if (unique) {
+            return Array.from(new Set(result));
+        }
+
+        return result;
+    } catch (error) {
+        if (suppress) {
+            return [];
+        }
+        throw error;
     }
-
-    // Initial conversion
-    let result = toListType(input, useValues);
-
-    // Process list if needed
-    if (flatten || dropna) {
-        result = processList(result, {
-            flatten,
-            dropna
-        });
-    }
-
-    // Make unique if requested
-    if (unique) {
-        return Array.from(new Set(result));
-    }
-
-    return result;
 }
 
 /**
  * Convert input to list type based on its type
  */
-function toListType(input: any, useValues: boolean): any[] {
-    // Handle null/undefined
-    if (input == null) {
-        return [];
-    }
-
-    // Handle arrays
-    if (Array.isArray(input)) {
-        return input;
-    }
-
-    // Handle strings and buffers
-    if (typeof input === 'string' || input instanceof Buffer) {
-        return useValues ? Array.from(input) : [input];
-    }
-
-    // Handle Maps
-    if (input instanceof Map) {
-        return useValues ? Array.from(input.values()) : [input];
-    }
-
-    // Handle Sets
-    if (input instanceof Set) {
-        return Array.from(input);
-    }
-
-    // Handle objects with values method
-    if (useValues && typeof input?.values === 'function') {
-        try {
-            return Array.from(input.values());
-        } catch {
-            // Fall through to default handling
+function toListType<T>(
+    input: any,
+    useValues: boolean,
+    suppress: boolean
+): T[] {
+    try {
+        // Handle null/undefined
+        if (input == null) {
+            return [];
         }
-    }
 
-    // Handle plain objects
-    if (isPlainObject(input)) {
-        return useValues ? Object.values(input) : [input];
-    }
+        // Handle arrays
+        if (Array.isArray(input)) {
+            return input;
+        }
 
-    // Handle iterables
-    if (Symbol.iterator in Object(input)) {
-        return Array.from(input);
-    }
+        // Handle strings
+        if (typeof input === 'string') {
+            return (useValues ? Array.from(input) : [input]) as T[];
+        }
 
-    // Default to single item array
-    return [input];
+        // Handle Buffers
+        if (input instanceof Buffer) {
+            return (useValues ? Array.from(input.toString()) : [input]) as T[];
+        }
+
+        // Handle Maps
+        if (input instanceof Map) {
+            return (useValues ? Array.from(input.values()) : [input]) as T[];
+        }
+
+        // Handle Sets
+        if (input instanceof Set) {
+            return Array.from(input) as T[];
+        }
+
+        // Handle objects with values method
+        if (useValues && typeof input?.values === 'function') {
+            try {
+                return Array.from(input.values()) as T[];
+            } catch {
+                // Fall through to default handling
+            }
+        }
+
+        // Handle plain objects
+        if (isPlainObject(input)) {
+            return (useValues ? Object.values(input) : [input]) as T[];
+        }
+
+        // Handle iterables
+        if (Symbol.iterator in Object(input)) {
+            return Array.from(input) as T[];
+        }
+
+        // Default to single item array
+        return [input] as T[];
+    } catch (error) {
+        if (suppress) {
+            return [];
+        }
+        throw error;
+    }
 }
 
 /**
  * Process list with flattening and null removal
  */
-function processList(
-    list: any[],
-    options: { flatten: boolean; dropna: boolean }
-): any[] {
-    const { flatten, dropna } = options;
-    const result: any[] = [];
-
-    for (const item of list) {
-        if (isNestedStructure(item)) {
-            if (flatten) {
-                result.push(
-                    ...processList(
-                        Array.isArray(item) ? item : Array.from(item),
-                        options
-                    )
-                );
-            } else {
-                result.push(
-                    processList(
-                        Array.isArray(item) ? item : Array.from(item),
-                        options
-                    )
-                );
-            }
-        } else if (!dropna || item != null) {
-            result.push(item);
-        }
+function processList<T>(
+    list: T[],
+    options: {
+        flatten: boolean;
+        dropna: boolean;
+        suppress?: boolean;
     }
+): T[] {
+    const { flatten, dropna, suppress = false } = options;
+    const result: T[] = [];
 
-    return result;
+    try {
+        for (const item of list) {
+            if (isNestedStructure(item)) {
+                if (flatten) {
+                    result.push(
+                        ...processList(
+                            Array.isArray(item) ? item : Array.from(item as any),
+                            options
+                        )
+                    );
+                } else {
+                    result.push(
+                        processList(
+                            Array.isArray(item) ? item : Array.from(item as any),
+                            options
+                        ) as any
+                    );
+                }
+            } else if (!dropna || item != null) {
+                result.push(item);
+            }
+        }
+
+        return result;
+    } catch (error) {
+        if (suppress) {
+            return list;
+        }
+        throw error;
+    }
 }
 
 /**
  * Check if value is a plain object
  */
 function isPlainObject(value: any): boolean {
-    if (value === null || typeof value !== 'object') return false;
+    if (value === null || typeof value !== 'object') {
+        return false;
+    }
     const proto = Object.getPrototypeOf(value);
     return proto === Object.prototype || proto === null;
 }
@@ -166,20 +203,47 @@ function isNestedStructure(value: any): boolean {
 export const listUtils = {
     /**
      * Flatten a list to specified depth
+     * 
+     * @example
+     * ```typescript
+     * flatten([1, [2, [3, 4]]], 1) // [1, 2, [3, 4]]
+     * flatten([1, [2, [3, 4]]]) // [1, 2, 3, 4]
+     * ```
      */
     flatten<T>(list: T[], depth: number = Infinity): T[] {
-        return list.flat(depth);
+        const flattenRecursive = (arr: any[], currentDepth: number): any[] => {
+            return arr.reduce((acc, val) => {
+                if (Array.isArray(val) && currentDepth > 0) {
+                    acc.push(...flattenRecursive(val, currentDepth - 1));
+                } else {
+                    acc.push(val);
+                }
+                return acc;
+            }, []);
+        };
+
+        return flattenRecursive(list, depth);
     },
 
     /**
      * Remove null and undefined values
+     * 
+     * @example
+     * ```typescript
+     * dropNulls([1, null, 2, undefined]) // [1, 2]
+     * ```
      */
     dropNulls<T>(list: T[]): NonNullable<T>[] {
-        return list.filter(item => item != null) as NonNullable<T>[];
+        return list.filter((item): item is NonNullable<T> => item != null);
     },
 
     /**
      * Get unique values from list
+     * 
+     * @example
+     * ```typescript
+     * unique([1, 2, 2, 3, 3]) // [1, 2, 3]
+     * ```
      */
     unique<T>(list: T[]): T[] {
         return Array.from(new Set(list));
@@ -187,6 +251,13 @@ export const listUtils = {
 
     /**
      * Check if value is list-like
+     * 
+     * @example
+     * ```typescript
+     * isListLike([1, 2, 3]) // true
+     * isListLike(new Set([1, 2])) // true
+     * isListLike({ length: 1 }) // false
+     * ```
      */
     isListLike(value: any): boolean {
         return Array.isArray(value) ||
@@ -195,23 +266,3 @@ export const listUtils = {
                 typeof value?.length === 'number');
     }
 };
-
-// Example usage:
-/*
-// Basic conversion
-const numbers = toList(1);  // [1]
-const letters = toList('abc', { useValues: true });  // ['a', 'b', 'c']
-
-// Flatten nested structures
-const nested = toList([1, [2, [3, 4]]], { flatten: true });  // [1, 2, 3, 4]
-
-// Remove null values
-const withNulls = toList([1, null, 2, undefined], { dropna: true });  // [1, 2]
-
-// Get unique values
-const duplicates = toList([1, 2, 2, 3], { flatten: true, unique: true });  // [1, 2, 3]
-
-// Convert object values
-const obj = { a: 1, b: 2 };
-const values = toList(obj, { useValues: true });  // [1, 2]
-*/

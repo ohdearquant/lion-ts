@@ -1,5 +1,16 @@
-import { stringSimilarity, SIMILARITY_ALGO_MAP, SIMILARITY_TYPE } from '../../libs/string_similarity';
-import { KeysDict } from '../../types';
+import { 
+  stringSimilarity, 
+  SIMILARITY_ALGO_MAP, 
+  type SimilarityAlgorithm,
+  type SimilarityFunction,
+  type SimilarityResult
+} from '../string_similarity';
+import { ValueError, TypeError } from '../errors';
+
+/**
+ * Dictionary mapping keys to their expected types
+ */
+export type KeysDict = Record<string, string>;
 
 /**
  * Validate and correct dictionary keys based on expected keys using string similarity.
@@ -21,12 +32,11 @@ import { KeysDict } from '../../types';
  * @returns A new dictionary with validated and corrected keys.
  * @throws ValueError - If validation fails based on specified parameters.
  * @throws TypeError - If input types are invalid.
- * @throws AttributeError - If key validation fails.
  */
 export function validateKeys(
   d_: Record<string, any>,
   keys: string[] | KeysDict,
-  similarity_algo: SIMILARITY_TYPE | ((a: string, b: string) => number) = 'jaro_winkler',
+  similarity_algo: SimilarityAlgorithm | SimilarityFunction = 'jaro_winkler',
   similarity_threshold: number = 0.85,
   fuzzy_match: boolean = true,
   handle_unmatched: 'ignore' | 'raise' | 'remove' | 'fill' | 'force' = 'ignore',
@@ -57,7 +67,7 @@ export function validateKeys(
   const matched_input = new Set<string>();
 
   // Get similarity function
-  let similarity_func: (a: string, b: string) => number;
+  let similarity_func: SimilarityFunction;
   if (typeof similarity_algo === 'string') {
     if (!(similarity_algo in SIMILARITY_ALGO_MAP)) {
       throw new ValueError(`Unknown similarity algorithm: ${similarity_algo}`);
@@ -86,16 +96,18 @@ export function validateKeys(
         break;
       }
 
-      const matches = stringSimilarity(
+      const result = stringSimilarity(
         key,
         Array.from(remaining_expected),
-        similarity_func,
-        similarity_threshold,
-        true
+        {
+          algorithm: similarity_algo,
+          threshold: similarity_threshold,
+          returnMostSimilar: true
+        }
       );
 
-      if (matches) {
-        const match = matches;
+      if (result !== null) {
+        const match = result as string;
         corrected_out[match] = d_[key];
         matched_expected.add(match);
         matched_input.add(key);

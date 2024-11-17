@@ -1,33 +1,30 @@
-/**
- * Supported docstring styles
- */
-type DocStyle = 'google' | 'rest';
-
-/**
- * Result of docstring extraction
- */
-interface DocstringResult {
-    description: string | null;
-    params: Record<string, string>;
-}
+import { DocStyle, DocstringResult, ParseError } from './types';
 
 /**
  * Extract function description and parameter descriptions from docstring.
  * 
  * @param func - Function to extract docstring from
  * @param style - Docstring style ('google' or 'rest')
- * @returns Tuple of description and parameter descriptions
- * @throws Error if unsupported style provided
+ * @returns Extracted docstring information
+ * @throws ParseError if unsupported style provided
  */
 export function extractDocstring(
     func: Function,
     style: DocStyle = 'google'
-): [string | null, Record<string, string>] {
+): DocstringResult {
     // Get function's documentation
     const docstring = getFunctionDoc(func);
     
     if (!docstring) {
-        return [null, {}];
+        return {
+            description: undefined,
+            params: {},
+            returns: undefined,
+            raises: {},
+            examples: [],
+            notes: [],
+            references: []
+        };
     }
 
     // Parse based on style
@@ -37,7 +34,7 @@ export function extractDocstring(
         case 'rest':
             return extractDocstringRest(docstring);
         default:
-            throw new Error(
+            throw new ParseError(
                 `${style} is not supported. Please choose either "google" or "rest".`
             );
     }
@@ -46,94 +43,171 @@ export function extractDocstring(
 /**
  * Extract details from Google-style docstring
  */
-function extractDocstringGoogle(
-    docstring: string
-): [string | null, Record<string, string>] {
+function extractDocstringGoogle(docstring: string): DocstringResult {
     const lines = docstring.split('\n');
-    const funcDescription = lines[0].trim();
-    const paramsDescription: Record<string, string> = {};
+    const result: DocstringResult = {
+        description: lines[0].trim() || undefined,
+        params: {},
+        returns: undefined,
+        raises: {},
+        examples: [],
+        notes: [],
+        references: []
+    };
 
-    let paramStartPos = -1;
-    for (let i = 1; i < lines.length; i++) {
-        const line = lines[i].trim().toLowerCase();
-        if (line.startsWith('args') || 
-            line.startsWith('parameters') ||
-            line.startsWith('params') ||
-            line.startsWith('arguments')) {
-            paramStartPos = i + 1;
-            break;
-        }
-    }
-
-    if (paramStartPos === -1) {
-        return [funcDescription, paramsDescription];
-    }
-
+    let currentSection: keyof DocstringResult | null = null;
     let currentParam: string | null = null;
-    for (let i = paramStartPos; i < lines.length; i++) {
-        const line = lines[i];
-        if (line.trim() === '') {
+    let buffer: string[] = [];
+
+    for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+
+        // Skip empty lines
+        if (!line) {
             continue;
         }
-        
-        if (line.startsWith(' ')) {
-            const paramDesc = line.split(':', 1);
-            if (paramDesc.length === 1 && currentParam) {
-                paramsDescription[currentParam] += ` ${paramDesc[0].trim()}`;
+
+        // Check for section headers
+        if (!line.startsWith(' ')) {
+            const lowerLine = line.toLowerCase();
+            if (lowerLine.startsWith('args') || lowerLine.startsWith('parameters')) {
+                currentSection = 'params';
+                buffer = [];
                 continue;
             }
-            
-            const [param, ...descParts] = line.split(':');
-            const paramName = param.split('(')[0].trim();
-            const desc = descParts.join(':').trim();
-            
-            paramsDescription[paramName] = desc;
-            currentParam = paramName;
-        } else {
-            break;
+            if (lowerLine.startsWith('returns')) {
+                currentSection = 'returns';
+                buffer = [];
+                continue;
+            }
+            if (lowerLine.startsWith('raises') || lowerLine.startsWith('throws')) {
+                currentSection = 'raises';
+                buffer = [];
+                continue;
+            }
+            if (lowerLine.startsWith('example')) {
+                currentSection = 'examples';
+                buffer = [];
+                continue;
+            }
+            if (lowerLine.startsWith('note')) {
+                currentSection = 'notes';
+                buffer = [];
+                continue;
+            }
+            if (lowerLine.startsWith('reference')) {
+                currentSection = 'references';
+                buffer = [];
+                continue;
+            }
+        }
+
+        // Process section content
+        if (currentSection) {
+            if (currentSection === 'params') {
+                if (line.startsWith(' ')) {
+                    const paramMatch = line.match(/^\s*(\w+)(?:\s*\([^)]+\))?\s*:\s*(.+)/);
+                    if (paramMatch) {
+                        const [, name, desc] = paramMatch;
+                        result.params[name] = desc.trim();
+                        currentParam = name;
+                    } else if (currentParam && line.trim()) {
+                        result.params[currentParam] += ' ' + line.trim();
+                    }
+                }
+            } else if (currentSection === 'returns' && line.startsWith(' ')) {
+                buffer.push(line.trim());
+                result.returns = buffer.join(' ');
+            } else if (currentSection === 'raises' && line.startsWith(' ')) {
+                const raiseMatch = line.match(/^\s*(\w+):\s*(.+)/);
+                if (raiseMatch) {
+                    const [, name, desc] = raiseMatch;
+                    result.raises[name] = desc.trim();
+                }
+            } else if (currentSection === 'examples' || currentSection === 'notes' || currentSection === 'references') {
+                if (line.startsWith(' ')) {
+                    buffer.push(line.trim());
+                    result[currentSection] = [...buffer];
+                }
+            }
         }
     }
 
-    return [funcDescription, paramsDescription];
+    return result;
 }
 
 /**
  * Extract details from reST-style docstring
  */
-function extractDocstringRest(
-    docstring: string
-): [string | null, Record<string, string>] {
+function extractDocstringRest(docstring: string): DocstringResult {
     const lines = docstring.split('\n');
-    const funcDescription = lines[0].trim();
-    const paramsDescription: Record<string, string> = {};
+    const result: DocstringResult = {
+        description: lines[0].trim() || undefined,
+        params: {},
+        returns: undefined,
+        raises: {},
+        examples: [],
+        notes: [],
+        references: []
+    };
 
     let currentParam: string | null = null;
+    let currentSection: keyof DocstringResult | null = null;
+    let buffer: string[] = [];
     
     for (const line of lines.slice(1)) {
         const trimmedLine = line.trim();
         
         if (trimmedLine.startsWith(':param')) {
-            const paramDesc = trimmedLine.split(':', 2);
-            if (paramDesc.length < 2) continue;
-            
-            const [_, param, ...descParts] = paramDesc;
-            const paramName = param.split(' ').pop()?.trim() || '';
-            const desc = descParts.join(':').trim();
-            
-            paramsDescription[paramName] = desc;
-            currentParam = paramName;
-        } else if (trimmedLine.startsWith(' ') && currentParam) {
-            paramsDescription[currentParam] += ` ${trimmedLine}`;
+            currentSection = 'params';
+            const paramMatch = trimmedLine.match(/^:param\s+(\w+):\s*(.+)/);
+            if (paramMatch) {
+                const [, name, desc] = paramMatch;
+                result.params[name] = desc.trim();
+                currentParam = name;
+            }
+        } else if (trimmedLine.startsWith(':returns:')) {
+            currentSection = 'returns';
+            const desc = trimmedLine.replace(/^:returns:\s*/, '').trim();
+            buffer = [desc];
+            result.returns = desc || undefined;
+        } else if (trimmedLine.startsWith(':raises:')) {
+            currentSection = 'raises';
+            const raiseMatch = trimmedLine.match(/^:raises\s+(\w+):\s*(.+)/);
+            if (raiseMatch) {
+                const [, name, desc] = raiseMatch;
+                result.raises[name] = desc.trim();
+            }
+        } else if (trimmedLine.startsWith(':example:')) {
+            currentSection = 'examples';
+            buffer = [];
+        } else if (trimmedLine.startsWith(':note:')) {
+            currentSection = 'notes';
+            buffer = [];
+        } else if (trimmedLine.startsWith(':reference:')) {
+            currentSection = 'references';
+            buffer = [];
+        } else if (trimmedLine.startsWith(' ') && currentSection) {
+            const content = trimmedLine.trim();
+            if (currentSection === 'params' && currentParam) {
+                result.params[currentParam] += ' ' + content;
+            } else if (currentSection === 'returns') {
+                buffer.push(content);
+                result.returns = buffer.join(' ');
+            } else if (currentSection === 'examples' || currentSection === 'notes' || currentSection === 'references') {
+                buffer.push(content);
+                result[currentSection] = [...buffer];
+            }
         }
     }
 
-    return [funcDescription, paramsDescription];
+    return result;
 }
 
 /**
  * Get function's documentation string
  */
-function getFunctionDoc(func: Function): string | null {
+function getFunctionDoc(func: Function): string | undefined {
     // Try to get JSDoc comment
     const funcString = func.toString();
     const jsdocMatch = funcString.match(/\/\*\*([\s\S]*?)\*\//);
@@ -159,33 +233,5 @@ function getFunctionDoc(func: Function): string | null {
             .trim();
     }
     
-    return null;
+    return undefined;
 }
-
-// Example usage:
-/*
-// Google style
-function exampleGoogle(param1: number, param2: string): void {
-    /** Example function.
-     *
-     * Args:
-     *   param1 (number): The first parameter
-     *   param2 (string): The second parameter
-     */
-}
-
-const [descGoogle, paramsGoogle] = extractDocstring(exampleGoogle, 'google');
-
-// reST style
-function exampleRest(param1: number, param2: string): void {
-    /** Example function.
-     *
-     * :param param1: The first parameter
-     * :type param1: number
-     * :param param2: The second parameter
-     * :type param2: string
-     */
-}
-
-const [descRest, paramsRest] = extractDocstring(exampleRest, 'rest');
-*/

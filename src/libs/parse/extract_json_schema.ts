@@ -1,24 +1,21 @@
+import { flatten } from '../nested/flatten';
+import { ValueError } from '../errors';
+import { JsonSchema, JsonSchemaType } from './types';
+
 /**
  * Options for schema extraction
  */
-interface SchemaOptions {
+export interface SchemaOptions {
+    /** Separator for flattened paths */
     sep?: string;
+    /** Convert keys to strings */
     coerceKeys?: boolean;
+    /** Handle arrays dynamically */
     dynamic?: boolean;
+    /** How to handle sequences */
     coerceSequence?: 'dict' | 'list' | null;
+    /** Maximum depth to process */
     maxDepth?: number;
-}
-
-/**
- * JSON Schema type definitions
- */
-type JsonSchemaType = 'string' | 'number' | 'integer' | 'boolean' | 
-                     'array' | 'object' | 'null' | 'any';
-
-interface JsonSchema {
-    type: JsonSchemaType;
-    properties?: Record<string, JsonSchema>;
-    items?: JsonSchema | { oneOf: JsonSchema[] };
 }
 
 /**
@@ -27,6 +24,37 @@ interface JsonSchema {
  * @param data - JSON data to extract schema from
  * @param options - Extraction options
  * @returns JSON Schema object
+ * 
+ * @example
+ * ```typescript
+ * const data = {
+ *     name: 'John',
+ *     age: 30,
+ *     addresses: [
+ *         { street: '123 Main St', city: 'Anytown' },
+ *         { street: '456 Oak Rd', city: 'Somewhere' }
+ *     ]
+ * };
+ * 
+ * const schema = extractJsonSchema(data);
+ * // {
+ * //     type: 'object',
+ * //     properties: {
+ * //         name: { type: 'string' },
+ * //         age: { type: 'integer' },
+ * //         addresses: {
+ * //             type: 'array',
+ * //             items: {
+ * //                 type: 'object',
+ * //                 properties: {
+ * //                     street: { type: 'string' },
+ * //                     city: { type: 'string' }
+ * //                 }
+ * //             }
+ * //         }
+ * //     }
+ * // }
+ * ```
  */
 export function extractJsonSchema(
     data: unknown,
@@ -52,14 +80,17 @@ export function extractJsonSchema(
     // Build initial schema structure
     const schema: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(flattened)) {
-        const keyParts = typeof key === 'string' ? key.split(sep) : [key];
+        const keyParts = key.split(sep);
         let current = schema;
         
         // Build nested structure
         for (let i = 0; i < keyParts.length - 1; i++) {
             const part = keyParts[i];
             current[part] = current[part] || {};
-            current = current[part] as Record<string, unknown>;
+            const next = current[part];
+            if (typeof next === 'object' && next !== null) {
+                current = next as Record<string, unknown>;
+            }
         }
 
         current[keyParts[keyParts.length - 1]] = getType(value);
@@ -85,10 +116,9 @@ function getType(value: unknown): JsonSchema {
         case 'boolean':
             return { type: 'boolean' };
         case 'number':
-            return { type: Number.isInteger(value) ? 
-                { type: 'integer' } : 
-                { type: 'number' }
-            };
+            return Number.isInteger(value) ? 
+                { type: 'integer' as JsonSchemaType } : 
+                { type: 'number' as JsonSchemaType };
         case 'object':
             if (Array.isArray(value)) {
                 return getArraySchema(value);
@@ -103,7 +133,7 @@ function getType(value: unknown): JsonSchema {
                 )
             };
         default:
-            return { type: 'any' };
+            return { type: 'any' as JsonSchemaType };
     }
 }
 
@@ -112,7 +142,7 @@ function getType(value: unknown): JsonSchema {
  */
 function getArraySchema(arr: unknown[]): JsonSchema {
     if (arr.length === 0) {
-        return { type: 'array', items: {} };
+        return { type: 'array', items: { type: 'any' as JsonSchemaType } };
     }
 
     const itemTypes = arr.map(getType);
@@ -120,11 +150,17 @@ function getArraySchema(arr: unknown[]): JsonSchema {
         JSON.stringify(type) === JSON.stringify(itemTypes[0])
     );
 
+    if (allSame) {
+        return {
+            type: 'array',
+            items: itemTypes[0]
+        };
+    }
+
     return {
         type: 'array',
-        items: allSame ? 
-            itemTypes[0] : 
-            { oneOf: itemTypes }
+        items: itemTypes[0],
+        oneOf: itemTypes
     };
 }
 
@@ -149,12 +185,18 @@ function consolidateSchema(
                     JSON.stringify(type) === JSON.stringify(itemTypes[0])
                 );
 
-                consolidated[key] = {
-                    type: 'array',
-                    items: allSame ?
-                        itemTypes[0] as JsonSchema :
-                        { oneOf: itemTypes as JsonSchema[] }
-                };
+                if (allSame) {
+                    consolidated[key] = {
+                        type: 'array',
+                        items: itemTypes[0] as JsonSchema
+                    };
+                } else {
+                    consolidated[key] = {
+                        type: 'array',
+                        items: itemTypes[0] as JsonSchema,
+                        oneOf: itemTypes as JsonSchema[]
+                    };
+                }
             } else {
                 consolidated[key] = {
                     type: 'object',
@@ -176,175 +218,3 @@ function isSchemaObject(value: unknown): value is JsonSchema {
            'type' in value &&
            typeof (value as JsonSchema).type === 'string';
 }
-
-/**
- * Flatten object (implementation needed)
- */
-function flatten(
-    data: unknown,
-    options: SchemaOptions
-): Record<string, unknown> {
-    // Implementation of flatten function needed
-    // This should match the Python flatten function's behavior
-    return {};
-}
-
-// Example usage:
-/*
-const data = {
-    name: 'John',
-    age: 30,
-    addresses: [
-        { street: '123 Main St', city: 'Anytown' },
-        { street: '456 Oak Rd', city: 'Somewhere' }
-    ],
-    metadata: {
-        created: '2023-01-01',
-        tags: ['user', 'active']
-    }
-};
-
-const schema = extractJsonSchema(data);
-*/
-
-
-/**
- * Options for flattening objects
- */
-interface FlattenOptions {
-    sep?: string;
-    coerceKeys?: boolean;
-    dynamic?: boolean;
-    coerceSequence?: 'dict' | 'list' | null;
-    maxDepth?: number;
-}
-
-/**
- * Flatten a nested object structure
- * 
- * @param data - Object to flatten
- * @param options - Flattening options
- * @returns Flattened object
- */
-export function flatten(
-    data: unknown,
-    options: FlattenOptions = {}
-): Record<string, unknown> {
-    const {
-        sep = '|',
-        coerceKeys = true,
-        dynamic = true,
-        coerceSequence = null,
-        maxDepth = undefined
-    } = options;
-
-    const result: Record<string, unknown> = {};
-
-    function flattenHelper(
-        obj: unknown,
-        prefix: string[] = [],
-        depth: number = 0
-    ): void {
-        // Check depth limit
-        if (maxDepth !== undefined && depth > maxDepth) {
-            const key = prefix.join(sep);
-            result[key] = obj;
-            return;
-        }
-
-        if (obj === null || obj === undefined) {
-            const key = prefix.join(sep);
-            result[key] = obj;
-            return;
-        }
-
-        // Handle arrays
-        if (Array.isArray(obj)) {
-            if (obj.length === 0) {
-                const key = prefix.join(sep);
-                result[key] = obj;
-                return;
-            }
-
-            if (coerceSequence === 'dict') {
-                obj.forEach((item, index) => {
-                    flattenHelper(item, [...prefix, String(index)], depth + 1);
-                });
-            } else if (coerceSequence === 'list') {
-                const key = prefix.join(sep);
-                result[key] = obj;
-            } else {
-                // Handle based on content type
-                const allPrimitive = obj.every(isPrimitive);
-                if (allPrimitive || !dynamic) {
-                    const key = prefix.join(sep);
-                    result[key] = obj;
-                } else {
-                    obj.forEach((item, index) => {
-                        flattenHelper(item, [...prefix, String(index)], depth + 1);
-                    });
-                }
-            }
-            return;
-        }
-
-        // Handle objects
-        if (typeof obj === 'object') {
-            const entries = Object.entries(obj as Record<string, unknown>);
-            if (entries.length === 0) {
-                const key = prefix.join(sep);
-                result[key] = obj;
-                return;
-            }
-
-            entries.forEach(([key, value]) => {
-                const newKey = coerceKeys ? String(key) : key;
-                flattenHelper(value, [...prefix, newKey], depth + 1);
-            });
-            return;
-        }
-
-        // Handle primitive values
-        const key = prefix.join(sep);
-        result[key] = obj;
-    }
-
-    flattenHelper(data);
-    return result;
-}
-
-/**
- * Check if a value is primitive
- */
-function isPrimitive(value: unknown): boolean {
-    return value === null ||
-           value === undefined ||
-           typeof value === 'string' ||
-           typeof value === 'number' ||
-           typeof value === 'boolean';
-}
-
-// Example usage:
-/*
-const nested = {
-    a: 1,
-    b: {
-        c: 2,
-        d: [3, 4, 5],
-        e: {
-            f: 6
-        }
-    }
-};
-
-const flattened = flatten(nested);
-// Result:
-// {
-//     'a': 1,
-//     'b|c': 2,
-//     'b|d|0': 3,
-//     'b|d|1': 4,
-//     'b|d|2': 5,
-//     'b|e|f': 6
-// }
-*/

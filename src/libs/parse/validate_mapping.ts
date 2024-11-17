@@ -1,7 +1,8 @@
-import { toJson, toDict } from './to_json';
-import { validateKeys } from './validate_keys';
-import { SIMILARITY_TYPE } from '../../libs/string_similarity';
-import { KeysDict } from '../../types';
+import { toJson } from './to_json';
+import { toDict } from './to_dict';
+import { validateKeys, type KeysDict } from './validate_keys';
+import { ValueError, TypeError } from '../errors';
+import { type SimilarityAlgorithm, type SimilarityFunction } from '../string_similarity';
 
 /**
  * Validate and correct any input into a dictionary with expected keys.
@@ -33,7 +34,7 @@ import { KeysDict } from '../../types';
 export function validateMapping(
   d: any,
   keys: string[] | KeysDict,
-  similarity_algo: SIMILARITY_TYPE | ((a: string, b: string) => number) = 'jaro_winkler',
+  similarity_algo: SimilarityAlgorithm | SimilarityFunction = 'jaro_winkler',
   similarity_threshold: number = 0.85,
   fuzzy_match: boolean = true,
   handle_unmatched: 'ignore' | 'raise' | 'remove' | 'fill' | 'force' = 'ignore',
@@ -59,7 +60,7 @@ export function validateMapping(
         dictInput = toDict(d, { strType: 'json', fuzzyParse: true, suppress: true });
       }
     } else {
-      dictInput = toDict(d, { useModelDump: true, fuzzyParse: true, suppress: true });
+      dictInput = toDict(d, { fuzzyParse: true, suppress: true });
     }
 
     if (typeof dictInput !== 'object' || dictInput === null) {

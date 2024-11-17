@@ -3,8 +3,12 @@ import {
   PATTERNS,
   TRUE_VALUES, 
   FALSE_VALUES,
-  type ValidNumericType 
 } from '../../constants';
+
+import { ValidNumericType } from './types';
+
+
+import { ValueError, TypeError } from '../errors';
 
 import type {
   ReadableJsonOptions,
@@ -148,12 +152,12 @@ export function validateNumType(numType: ValidNumericType): NumberConstructor {
       case 'complex':
         return Number;
       default:
-        throw new Error(`Invalid number type: ${numType}`);
+        throw new ValueError(`Invalid number type: ${numType}`);
     }
   }
 
   if (numType !== Number) {
-    throw new Error(`Invalid number type: ${numType}`);
+    throw new ValueError(`Invalid number type: ${numType}`);
   }
 
   return numType;
@@ -180,7 +184,7 @@ export function validateBoolean(x: any): boolean {
   const strValue = String(x).trim().toLowerCase();
 
   if (!strValue) {
-    throw new Error('Cannot convert empty string to boolean');
+    throw new ValueError('Cannot convert empty string to boolean');
   }
 
   if (TRUE_VALUES.has(strValue)) {
@@ -197,7 +201,7 @@ export function validateBoolean(x: any): boolean {
     return Boolean(num);
   }
 
-  throw new Error(
+  throw new ValueError(
     `Cannot convert '${x}' to boolean. Valid true values are: ${[...TRUE_VALUES]}, ` +
     `valid false values are: ${[...FALSE_VALUES]}`
   );
@@ -221,7 +225,7 @@ export function convertPercentage(value: string): number {
   try {
     return Number(value.replace('%', '')) / 100;
   } catch (e) {
-    throw new Error(`Invalid percentage value: ${value}`);
+    throw new ValueError(`Invalid percentage value: ${value}`);
   }
 }
 
@@ -231,7 +235,7 @@ export function convertPercentage(value: string): number {
 export function convertFraction(value: string): number {
   const [num, denom] = value.split('/').map(Number);
   if (denom === 0) {
-    throw new Error('Division by zero');
+    throw new ValueError('Division by zero');
   }
   return num / denom;
 }
@@ -265,7 +269,7 @@ export function toList(
   const { flatten = false, dropna = false, unique = false, useValues = false } = options;
 
   if (unique && !flatten) {
-    throw new Error('unique=true requires flatten=true');
+    throw new ValueError('unique=true requires flatten=true');
   }
 
   if (input === null || input === UNDEFINED) {

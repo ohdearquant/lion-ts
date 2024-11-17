@@ -1,20 +1,12 @@
-/**
- * Options for JSON block extraction
- */
-interface ExtractOptions {
-    suppress?: boolean;
-    fuzzyParse?: boolean;
-    dropna?: boolean;
-}
+import { toDict } from './to_dict';
+import { ParseError, JsonBlockOptions, ExtractOptions } from './types';
 
 /**
  * Options for single block extraction
  */
-interface BlockOptions<T> {
-    language?: string;
+interface BlockOptions<T> extends ExtractOptions {
     regexPattern?: string;
     parser?: (str: string) => T;
-    suppress?: boolean;
 }
 
 /**
@@ -23,10 +15,27 @@ interface BlockOptions<T> {
  * @param strToParse - Input text containing JSON blocks
  * @param options - Extraction options
  * @returns Array of parsed JSON objects
+ * @throws ParseError if parsing fails and suppress is false
+ * 
+ * @example
+ * ```typescript
+ * const text = `
+ * Some text
+ * \`\`\`json
+ * {
+ *   "key": "value"
+ * }
+ * \`\`\`
+ * More text
+ * `;
+ * 
+ * const blocks = extractJsonBlocks(text);
+ * // [{ key: "value" }]
+ * ```
  */
 export function extractJsonBlocks(
     strToParse: string,
-    options: ExtractOptions = {}
+    options: JsonBlockOptions = {}
 ): Record<string, any>[] {
     const {
         suppress = true,
@@ -34,21 +43,30 @@ export function extractJsonBlocks(
         dropna = true
     } = options;
 
-    const pattern = /```json\s*(.*?)\s*```/gs;
-    const matches = [...strToParse.matchAll(pattern)];
-    
-    const jsonBlocks = matches.map(match => {
-        try {
-            return toDict(match[1], { fuzzyParse, suppress });
-        } catch (error) {
-            if (suppress) return null;
-            throw error;
-        }
-    });
+    try {
+        const pattern = /```json\s*(.*?)\s*```/gs;
+        const matches = [...strToParse.matchAll(pattern)];
+        
+        const jsonBlocks = matches.map(match => {
+            try {
+                return toDict(match[1], { fuzzyParse, suppress });
+            } catch (error) {
+                if (suppress) return undefined;
+                throw error;
+            }
+        });
 
-    return dropna 
-        ? jsonBlocks.filter(block => block != null) 
-        : jsonBlocks;
+        return dropna 
+            ? jsonBlocks.filter((block): block is Record<string, any> => block != null)
+            : jsonBlocks as Record<string, any>[];
+    } catch (error) {
+        if (suppress) {
+            return [];
+        }
+        throw new ParseError(
+            `Failed to extract JSON blocks: ${error instanceof Error ? error.message : String(error)}`
+        );
+    }
 }
 
 /**
@@ -57,12 +75,27 @@ export function extractJsonBlocks(
  * @param strToParse - Input string containing code block
  * @param options - Extraction options
  * @returns Parsed content of the code block
- * @throws Error if no code block found and suppress is false
+ * @throws ParseError if no code block found and suppress is false
+ * 
+ * @example
+ * ```typescript
+ * const text = `
+ * \`\`\`json
+ * { "key": "value" }
+ * \`\`\`
+ * `;
+ * 
+ * const block = extractBlock(text, {
+ *     language: 'json',
+ *     parser: JSON.parse
+ * });
+ * // { key: "value" }
+ * ```
  */
 export function extractBlock<T = Record<string, any>>(
     strToParse: string,
     options: BlockOptions<T> = {}
-): T | null {
+): T | undefined {
     const {
         language = 'json',
         regexPattern,
@@ -70,57 +103,45 @@ export function extractBlock<T = Record<string, any>>(
         suppress = false
     } = options;
 
-    const pattern = regexPattern || 
-        (language ? `\`\`\`${language}\\n?(.*?)\\n?\`\`\`` : '```\\n?(.*?)\\n?```');
-    
-    let codeStr: string | null = null;
-    
-    // Try regex match first
-    const match = new RegExp(pattern, 's').exec(strToParse);
-    if (match) {
-        codeStr = match[1].trim();
-    } 
-    // Try direct match
-    else if (strToParse.startsWith(`\`\`\`${language}\n`) && 
-             strToParse.endsWith('\n```')) {
-        codeStr = strToParse
-            .slice(4 + language.length, -4)
-            .trim();
-    }
-    // Handle no match
-    else if (suppress) {
-        return null;
-    } else {
-        throw new Error('No code block found in the input string.');
-    }
-
-    // Parse the extracted code
     try {
-        const parseFunc = parser || 
-            ((str: string) => toDict(str, { fuzzyParse: true, suppress: true }));
-        return parseFunc(codeStr) as T;
-    } catch (error) {
-        if (suppress) return null;
-        throw error;
-    }
-}
+        const pattern = regexPattern || 
+            (language ? `\`\`\`${language}\\n?(.*?)\\n?\`\`\`` : '```\\n?(.*?)\\n?```');
+        
+        let codeStr: string | undefined;
+        
+        // Try regex match first
+        const match = new RegExp(pattern, 's').exec(strToParse);
+        if (match) {
+            codeStr = match[1].trim();
+        } 
+        // Try direct match
+        else if (strToParse.startsWith(`\`\`\`${language}\n`) && 
+                 strToParse.endsWith('\n```')) {
+            codeStr = strToParse
+                .slice(4 + language.length, -4)
+                .trim();
+        }
+        // Handle no match
+        else if (suppress) {
+            return undefined;
+        } else {
+            throw new ParseError('No code block found in the input string.');
+        }
 
-/**
- * Convert string to dictionary with fuzzy parsing
- */
-function toDict(
-    str: string, 
-    options: { fuzzyParse?: boolean; suppress?: boolean } = {}
-): Record<string, any> | null {
-    const { fuzzyParse = true, suppress = true } = options;
-
-    try {
-        // Remove common issues
-        const cleanStr = fuzzyParse ? cleanJsonString(str) : str;
-        return JSON.parse(cleanStr);
+        // Parse the extracted code
+        try {
+            const parseFunc = parser || 
+                ((str: string) => toDict(str, { fuzzyParse: true, suppress: true }));
+            return parseFunc(codeStr) as T;
+        } catch (error) {
+            if (suppress) return undefined;
+            throw new ParseError(
+                `Failed to parse code block: ${error instanceof Error ? error.message : String(error)}`
+            );
+        }
     } catch (error) {
-        if (suppress) return null;
-        throw error;
+        if (suppress) return undefined;
+        throw error instanceof ParseError ? error : new ParseError(String(error));
     }
 }
 
@@ -144,24 +165,3 @@ function cleanJsonString(str: string): string {
     
     return str;
 }
-
-// Example usage:
-/*
-const text = `
-\`\`\`json
-{
-    "key": "value",
-    "number": 42
-}
-\`\`\`
-`;
-
-// Extract all JSON blocks
-const blocks = extractJsonBlocks(text);
-
-// Extract single block with custom parser
-const block = extractBlock(text, {
-    language: 'json',
-    parser: (str) => JSON.parse(str)
-});
-*/
