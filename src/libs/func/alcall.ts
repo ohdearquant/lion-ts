@@ -1,143 +1,196 @@
+import { toList } from '../parse';
+import { ucall } from './ucall';
 
-async def alcall(
-    input_: list[Any],
-    func: Callable[..., T],
-    /,
-    num_retries: int = 0,
-    initial_delay: float = 0,
-    retry_delay: float = 0,
-    backoff_factor: float = 1,
-    retry_default: Any = UNDEFINED,
-    retry_timeout: float | None = None,
-    retry_timing: bool = False,
-    verbose_retry: bool = True,
-    error_msg: str | None = None,
-    error_map: dict[type, Callable[[Exception], None]] | None = None,
-    max_concurrent: int | None = None,
-    throttle_period: float | None = None,
-    flatten: bool = False,
-    dropna: bool = False,
-    unique: bool = False,
-    **kwargs: Any,
-) -> list[T] | list[tuple[T, float]]:
-    """Apply a function to each element of a list asynchronously with options.
+interface AsyncListOptions<T> {
+    numRetries?: number;
+    initialDelay?: number;
+    retryDelay?: number;
+    backoffFactor?: number;
+    retryDefault?: T;
+    retryTimeout?: number | null;
+    retryTiming?: boolean;
+    verboseRetry?: boolean;
+    errorMsg?: string | null;
+    maxConcurrent?: number | null;
+    throttlePeriod?: number | null;
+    flatten?: boolean;
+    dropna?: boolean;
+    unique?: boolean;
+}
 
-    Args:
-        input_: List of inputs to be processed.
-        func: Async or sync function to apply to each input element.
-        num_retries: Number of retry attempts for each function call.
-        initial_delay: Initial delay before starting execution (seconds).
-        retry_delay: Delay between retry attempts (seconds).
-        backoff_factor: Factor by which delay increases after each attempt.
-        retry_default: Default value to return if all attempts fail.
-        retry_timeout: Timeout for each function execution (seconds).
-        retry_timing: If True, return execution duration for each call.
-        verbose_retry: If True, print retry messages.
-        error_msg: Custom error message prefix for exceptions.
-        error_map: Dict mapping exception types to error handlers.
-        max_concurrent: Maximum number of concurrent executions.
-        throttle_period: Minimum time between function executions (seconds).
-        flatten: If True, flatten the resulting list.
-        dropna: If True, remove None values from the result.
-        **kwargs: Additional keyword arguments passed to func.
+type TimedResult<T> = [T, number];
 
-    Returns:
-        list[T] | list[tuple[T, float]]: List of results, optionally with
-        execution times if retry_timing is True.
+/**
+ * Apply a function to each element of a list asynchronously with options.
+ *
+ * @param input List of inputs to be processed
+ * @param func Async or sync function to apply to each input element
+ * @param options Configuration options
+ * @returns List of results, optionally with execution times if retryTiming is true
+ * 
+ * @throws {Error} If execution exceeds retryTimeout
+ * @throws {Error} Any unhandled exception from function executions
+ */
+export async function alcall<T, U>(
+    input: T | T[],
+    func: (arg: T) => U | Promise<U>,
+    options: AsyncListOptions<U> & { retryTiming: true }
+): Promise<TimedResult<U>[]>;
+export async function alcall<T, U>(
+    input: T | T[],
+    func: (arg: T) => U | Promise<U>,
+    options?: AsyncListOptions<U>
+): Promise<U[]>;
+export async function alcall<T, U>(
+    input: T | T[],
+    func: (arg: T) => U | Promise<U>,
+    options: AsyncListOptions<U> = {}
+): Promise<U[] | TimedResult<U>[]> {
+    const {
+        numRetries = 0,
+        initialDelay = 0,
+        retryDelay = 0,
+        backoffFactor = 1,
+        retryDefault = undefined,
+        retryTimeout = null,
+        retryTiming = false,
+        verboseRetry = true,
+        errorMsg = null,
+        maxConcurrent = null,
+        throttlePeriod = null,
+        flatten = false,
+        dropna = false,
+        unique = false
+    } = options;
 
-    Raises:
-        asyncio.TimeoutError: If execution exceeds retry_timeout.
-        Exception: Any exception raised by func if not handled by error_map.
+    if (initialDelay > 0) {
+        await new Promise(resolve => setTimeout(resolve, initialDelay * 1000));
+    }
 
-    Examples:
-        >>> async def square(x):
-        ...     return x * x
-        >>> await alcall([1, 2, 3], square)
-        [1, 4, 9]
-        >>> await alcall([1, 2, 3], square, retry_timing=True)
-        [(1, 0.001), (4, 0.001), (9, 0.001)]
+    const semaphore = maxConcurrent ? {
+        queue: [] as Array<() => void>,
+        count: 0,
+        async acquire() {
+            if (this.count >= maxConcurrent) {
+                await new Promise<void>(resolve => this.queue.push(resolve));
+            }
+            this.count++;
+        },
+        release() {
+            this.count--;
+            const next = this.queue.shift();
+            if (next) next();
+        }
+    } : null;
 
-    Note:
-        - Uses semaphores for concurrency control if max_concurrent is set.
-        - Supports both synchronous and asynchronous functions for `func`.
-        - Results are returned in the original input order.
-    """
-    if initial_delay:
-        await asyncio.sleep(initial_delay)
+    const throttleDelay = throttlePeriod ? throttlePeriod * 1000 : 0;
 
-    semaphore = asyncio.Semaphore(max_concurrent) if max_concurrent else None
-    throttle_delay = throttle_period if throttle_period else 0
+    type TaskResult = [number, U, number?];
 
-    async def _task(i: Any, index: int) -> Any:
-        if semaphore:
-            async with semaphore:
-                return await _execute_task(i, index)
-        else:
-            return await _execute_task(i, index)
+    async function executeTask(
+        item: T,
+        index: number
+    ): Promise<TaskResult> {
+        let attempts = 0;
+        let currentDelay = retryDelay;
+        const startTime = retryTiming ? performance.now() : 0;
 
-    async def _execute_task(i: Any, index: int) -> Any:
-        attempts = 0
-        current_delay = retry_delay
-        while True:
-            try:
-                if retry_timing:
-                    start_time = asyncio.get_event_loop().time()
-                    result = await asyncio.wait_for(
-                        ucall(func, i, **kwargs), retry_timeout
-                    )
-                    end_time = asyncio.get_event_loop().time()
-                    return index, result, end_time - start_time
-                else:
-                    result = await asyncio.wait_for(
-                        ucall(func, i, **kwargs), retry_timeout
-                    )
-                    return index, result
-            except TimeoutError as e:
-                raise TimeoutError(
-                    f"{error_msg or ''} Timeout {retry_timeout} seconds " "exceeded"
-                ) from e
-            except Exception as e:
-                if error_map and type(e) in error_map:
-                    handler = error_map[type(e)]
-                    if asyncio.iscoroutinefunction(handler):
-                        return index, await handler(e)
-                    else:
-                        return index, handler(e)
-                attempts += 1
-                if attempts <= num_retries:
-                    if verbose_retry:
-                        print(
-                            f"Attempt {attempts}/{num_retries} failed: {e}"
-                            ", retrying..."
-                        )
-                    await asyncio.sleep(current_delay)
-                    current_delay *= backoff_factor
-                else:
-                    if retry_default is not UNDEFINED:
-                        return index, retry_default
-                    raise e
+        async function executeWithTimeout(): Promise<U> {
+            if (!retryTimeout) {
+                return ucall(func, item);
+            }
+            const timeoutPromise = new Promise<never>((_, reject) => {
+                setTimeout(() => reject(new Error('Timeout')), retryTimeout * 1000);
+            });
+            return Promise.race([
+                ucall(func, item),
+                timeoutPromise
+            ]);
+        }
 
-    tasks = [_task(i, index) for index, i in enumerate(input_)]
-    results = []
-    for coro in asyncio.as_completed(tasks):
-        result = await coro
-        results.append(result)
-        await asyncio.sleep(throttle_delay)
+        while (true) {
+            try {
+                const result = await executeWithTimeout();
+                if (retryTiming) {
+                    const duration = (performance.now() - startTime) / 1000;
+                    return [index, result, duration];
+                }
+                return [index, result];
+            } catch (e) {
+                const error = e as Error;
 
-    results.sort(key=lambda x: x[0])  # Sort results based on the original index
+                if (error.message === 'Timeout') {
+                    if (retryDefault !== undefined) {
+                        if (retryTiming) {
+                            const duration = (performance.now() - startTime) / 1000;
+                            return [index, retryDefault, duration];
+                        }
+                        return [index, retryDefault];
+                    }
+                    throw error;
+                }
 
-    if retry_timing:
-        if dropna:
-            return [
-                (result[1], result[2]) for result in results if result[1] is not None
-            ]
-        else:
-            return [(result[1], result[2]) for result in results]
-    else:
-        return to_list(
-            [result[1] for result in results],
-            flatten=flatten,
-            dropna=dropna,
-            unique=unique,
-        )
+                attempts++;
+                if (attempts <= numRetries) {
+                    if (verboseRetry) {
+                        console.log(
+                            `Attempt ${attempts}/${numRetries + 1} failed: ${error}, retrying...`
+                        );
+                    }
+                    await new Promise(resolve => 
+                        setTimeout(resolve, currentDelay * 1000)
+                    );
+                    currentDelay *= backoffFactor;
+                } else {
+                    if (retryDefault !== undefined) {
+                        if (retryTiming) {
+                            const duration = (performance.now() - startTime) / 1000;
+                            return [index, retryDefault, duration];
+                        }
+                        return [index, retryDefault];
+                    }
+                    throw error;
+                }
+            }
+        }
+    }
 
+    async function task(
+        item: T,
+        index: number
+    ): Promise<TaskResult> {
+        if (semaphore) {
+            await semaphore.acquire();
+            try {
+                return await executeTask(item, index);
+            } finally {
+                semaphore.release();
+            }
+        }
+        return executeTask(item, index);
+    }
+
+    const inputList = toList(input);
+    const tasks = inputList.map((item, index) => task(item, index));
+    const results: TaskResult[] = [];
+
+    for (const promise of tasks) {
+        const result = await promise;
+        results.push(result);
+        if (throttleDelay > 0) {
+            await new Promise(resolve => setTimeout(resolve, throttleDelay));
+        }
+    }
+
+    results.sort((a, b) => a[0] - b[0]);
+
+    if (retryTiming) {
+        const timedResults = results.map(result => [result[1], result[2]!] as TimedResult<U>);
+        const processedResults = toList(timedResults, { flatten, dropna, unique });
+        return processedResults as TimedResult<U>[];
+    }
+
+    const plainResults = results.map(result => result[1]);
+    const processedResults = toList(plainResults, { flatten, dropna, unique });
+    return processedResults as U[];
+}

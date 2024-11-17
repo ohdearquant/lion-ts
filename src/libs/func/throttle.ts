@@ -1,91 +1,103 @@
+import { isCoroutineFunc } from './utils';
 
+/**
+ * Provide a throttling mechanism for function calls.
+ * 
+ * When used as a decorator or wrapper, it ensures that the function can only
+ * be called once per specified period. Subsequent calls within this period
+ * are delayed to enforce this constraint.
+ */
+export class Throttle {
+    private period: number;
+    private lastCalled: number;
 
-class Throttle:
-    """
-    Provide a throttling mechanism for function calls.
+    /**
+     * Initialize a new instance of Throttle.
+     * 
+     * @param period The minimum time period (in seconds) between successive calls
+     */
+    constructor(period: number) {
+        this.period = period;
+        this.lastCalled = 0;
+    }
 
-    When used as a decorator, it ensures that the decorated function can only
-    be called once per specified period. Subsequent calls within this period
-    are delayed to enforce this constraint.
+    /**
+     * Apply throttling to a function.
+     * 
+     * @param func The function to throttle
+     * @returns The throttled function
+     */
+    apply<T, Args extends any[]>(
+        func: (...args: Args) => T | Promise<T>
+    ): (...args: Args) => Promise<T> {
+        return async (...args: Args) => {
+            const elapsed = performance.now() / 1000 - this.lastCalled;
+            if (elapsed < this.period) {
+                await new Promise(resolve => 
+                    setTimeout(resolve, (this.period - elapsed) * 1000)
+                );
+            }
+            this.lastCalled = performance.now() / 1000;
+            
+            if (isCoroutineFunc(func)) {
+                return await (func as (...args: Args) => Promise<T>)(...args);
+            } else {
+                return Promise.resolve((func as (...args: Args) => T)(...args));
+            }
+        };
+    }
+}
 
-    Attributes:
-        period: The minimum time period (in seconds) between successive calls.
-    """
+/**
+ * Throttle function execution to limit the rate of calls.
+ * 
+ * @param func The function to throttle
+ * @param period The minimum time interval between consecutive calls
+ * @returns The throttled function
+ * 
+ * @example
+ * ```typescript
+ * const throttledFn = throttle(async (x: number) => x * 2, 1);
+ * await throttledFn(5);  // Returns 10 immediately
+ * await throttledFn(6);  // Waits 1 second, then returns 12
+ * ```
+ */
+export function throttle<T, Args extends any[]>(
+    func: (...args: Args) => T | Promise<T>,
+    period: number
+): (...args: Args) => Promise<T> {
+    const throttleInstance = new Throttle(period);
+    return throttleInstance.apply(func);
+}
 
-    def __init__(self, period: float) -> None:
-        """
-        Initialize a new instance of Throttle.
-
-        Args:
-            period: The minimum time period (in seconds) between
-                successive calls.
-        """
-        self.period = period
-        self.last_called = 0
-
-    def __call__(self, func: Callable[..., T]) -> Callable[..., T]:
-        """
-        Decorate a synchronous function with the throttling mechanism.
-
-        Args:
-            func: The synchronous function to be throttled.
-
-        Returns:
-            The throttled synchronous function.
-        """
-
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs) -> Any:
-            elapsed = _t() - self.last_called
-            if elapsed < self.period:
-                time.sleep(self.period - elapsed)
-            self.last_called = _t()
-            return func(*args, **kwargs)
-
-        return wrapper
-
-    def __call_async__(
-        self, func: Callable[..., Callable[..., T]]
-    ) -> Callable[..., Callable[..., T]]:
-        """
-        Decorate an asynchronous function with the throttling mechanism.
-
-        Args:
-            func: The asynchronous function to be throttled.
-
-        Returns:
-            The throttled asynchronous function.
-        """
-
-        @functools.wraps(func)
-        async def wrapper(*args, **kwargs) -> Any:
-            elapsed = _t() - self.last_called
-            if elapsed < self.period:
-                await asyncio.sleep(self.period - elapsed)
-            self.last_called = _t()
-            return await func(*args, **kwargs)
-
-        return wrapper
-
-
-def throttle(func: Callable[..., T], period: float) -> Callable[..., Callable[..., T]]:
-    """
-    Throttle function execution to limit the rate of calls.
-
-    Args:
-        func: The function to throttle.
-        period: The minimum time interval between consecutive calls.
-
-    Returns:
-        The throttled function.
-    """
-    if not is_coroutine_func(func):
-        func = force_async(func)
-    throttle_instance = Throttle(period)
-
-    @wraps(func)
-    async def wrapper(*args, **kwargs):
-        await throttle_instance(func)(*args, **kwargs)
-        return await func(*args, **kwargs)
-
-    return wrapper
+/**
+ * Create a throttle decorator with the specified period.
+ * 
+ * @param period The minimum time interval between consecutive calls
+ * @returns A decorator function
+ * 
+ * @example
+ * ```typescript
+ * class Example {
+ *     @Throttle.create(1)
+ *     async process(x: number) {
+ *         return x * 2;
+ *     }
+ * }
+ * ```
+ */
+export namespace Throttle {
+    export function create(period: number) {
+        return function (
+            target: any,
+            propertyKey: string,
+            descriptor: PropertyDescriptor
+        ) {
+            const originalMethod = descriptor.value;
+            const throttleInstance = new Throttle(period);
+            
+            descriptor.value = throttleInstance.apply(originalMethod);
+            return descriptor;
+        };
+    }
+}

@@ -1,103 +1,121 @@
+import { ucall } from './ucall';
+import { isCoroutineFunc } from './utils';
 
+type ErrorHandler<T> = (error: Error) => T | Promise<T>;
+type ErrorMap<T> = Record<string, ErrorHandler<T>>;
 
-async def tcall(
-    func: Callable[..., T],
-    /,
-    *args: Any,
-    initial_delay: float = 0,
-    error_msg: str | None = None,
-    suppress_err: bool = False,
-    retry_timing: bool = False,
-    retry_timeout: float | None = None,
-    retry_default: Any = None,
-    error_map: dict[type, Callable[[Exception], None]] | None = None,
-    **kwargs: Any,
-) -> T | tuple[T, float]:
-    """Execute a function asynchronously with timing and error handling.
+interface TimingOptions<T> {
+    initialDelay?: number;
+    errorMsg?: string | null;
+    suppressErr?: boolean;
+    retryTiming?: boolean;
+    retryTimeout?: number | null;
+    retryDefault?: T;
+    errorMap?: ErrorMap<T> | null;
+}
 
-    Handles both coroutine and regular functions, supporting timing,
-    timeout, and custom error handling.
+/**
+ * Execute a function asynchronously with timing and error handling.
+ *
+ * @param func The function to execute (coroutine or regular)
+ * @param arg The argument to pass to the function
+ * @param options Configuration options
+ * @returns Function result, optionally with duration
+ * 
+ * @throws {Error} If execution exceeds the timeout
+ * @throws {Error} If an error occurs and suppressErr is false
+ * 
+ * @example
+ * ```typescript
+ * async function slowFunc(x: number) {
+ *     await new Promise(resolve => setTimeout(resolve, 1000));
+ *     return x * 2;
+ * }
+ * 
+ * const [result, duration] = await tcall(slowFunc, 5, { retryTiming: true });
+ * console.log(`Result: ${result}, Duration: ${duration.toFixed(2)}s`);
+ * // Result: 10, Duration: 1.00s
+ * ```
+ */
+export async function tcall<T, U>(
+    func: (arg: T) => U | Promise<U>,
+    arg: T,
+    options: TimingOptions<U> & { retryTiming: true }
+): Promise<[U, number]>;
+export async function tcall<T, U>(
+    func: (arg: T) => U | Promise<U>,
+    arg: T,
+    options?: TimingOptions<U>
+): Promise<U>;
+export async function tcall<T, U>(
+    func: (arg: T) => U | Promise<U>,
+    arg: T,
+    options: TimingOptions<U> = {}
+): Promise<U | [U, number]> {
+    const {
+        initialDelay = 0,
+        errorMsg = null,
+        suppressErr = false,
+        retryTiming = false,
+        retryTimeout = null,
+        retryDefault = null,
+        errorMap = null
+    } = options;
 
-    Args:
-        func: The function to execute (coroutine or regular).
-        *args: Positional arguments for the function.
-        initial_delay: Delay before execution (seconds).
-        error_msg: Custom error message prefix.
-        suppress_err: If True, return default on error instead of raising.
-        retry_timing: If True, return execution duration.
-        retry_timeout: Timeout for function execution (seconds).
-        retry_default: Value to return if an error occurs and suppress_err
-        is True.
-        error_map: Dict mapping exception types to error handlers.
-        **kwargs: Additional keyword arguments for the function.
+    const start = performance.now();
 
-    Returns:
-        T | tuple[T, float]: Function result, optionally with duration.
+    try {
+        if (initialDelay > 0) {
+            await new Promise(resolve => setTimeout(resolve, initialDelay * 1000));
+        }
 
-    Raises:
-        asyncio.TimeoutError: If execution exceeds the timeout.
-        RuntimeError: If an error occurs and suppress_err is False.
+        async function executeWithTimeout(): Promise<U> {
+            if (!retryTimeout) {
+                return ucall(func, arg);
+            }
+            const timeoutPromise = new Promise<never>((_, reject) => {
+                const timeoutId = setTimeout(() => {
+                    clearTimeout(timeoutId);
+                    reject(new Error('Timeout'));
+                }, retryTimeout * 1000);
+            });
+            return Promise.race([
+                ucall(func, arg),
+                timeoutPromise
+            ]);
+        }
 
-    Examples:
-        >>> async def slow_func(x):
-        ...     await asyncio.sleep(1)
-        ...     return x * 2
-        >>> result, duration = await tcall(slow_func, 5, retry_timing=True)
-        >>> print(f"Result: {result}, Duration: {duration:.2f}s")
-        Result: 10, Duration: 1.00s
+        const result = await executeWithTimeout();
+        const duration = (performance.now() - start) / 1000;
+        
+        return retryTiming ? [result, duration] as [U, number] : result;
 
-    Note:
-        - Automatically handles both coroutine and regular functions.
-        - Provides timing information for performance analysis.
-        - Supports custom error handling and suppression.
-    """
-    start = asyncio.get_event_loop().time()
+    } catch (e) {
+        const error = e as Error;
+        const duration = (performance.now() - start) / 1000;
 
-    try:
-        await asyncio.sleep(initial_delay)
-        result = None
+        if (error instanceof Error && error.message === 'Timeout') {
+            const errMsg = `${errorMsg || ''} Timeout ${retryTimeout} seconds exceeded`;
+            if (suppressErr) {
+                return retryTiming ? [retryDefault as U, duration] : retryDefault as U;
+            }
+            throw new Error(errMsg);
+        }
 
-        if asyncio.iscoroutinefunction(func):
-            # Asynchronous function
-            if retry_timeout is None:
-                result = await func(*args, **kwargs)
-            else:
-                result = await asyncio.wait_for(
-                    func(*args, **kwargs), timeout=retry_timeout
-                )
-        else:
-            # Synchronous function
-            if retry_timeout is None:
-                result = func(*args, **kwargs)
-            else:
-                result = await asyncio.wait_for(
-                    asyncio.shield(asyncio.to_thread(func, *args, **kwargs)),
-                    timeout=retry_timeout,
-                )
+        if (errorMap && error.constructor.name in errorMap) {
+            const handler = errorMap[error.constructor.name];
+            const handlerResult = await ucall(handler, error);
+            return retryTiming ? [handlerResult, duration] : handlerResult;
+        }
 
-        duration = asyncio.get_event_loop().time() - start
-        return (result, duration) if retry_timing else result
+        const errMsg = errorMsg
+            ? `${errorMsg} Error: ${error}`
+            : `An error occurred in async execution: ${error}`;
 
-    except TimeoutError as e:
-        error_msg = f"{error_msg or ''} Timeout {retry_timeout} seconds exceeded"
-        if suppress_err:
-            duration = asyncio.get_event_loop().time() - start
-            return (retry_default, duration) if retry_timing else retry_default
-        else:
-            raise TimeoutError(error_msg) from e
+        if (suppressErr) {
+            return retryTiming ? [retryDefault as U, duration] : retryDefault as U;
+        }
 
-    except Exception as e:
-        if error_map and type(e) in error_map:
-            error_map[type(e)](e)
-            duration = asyncio.get_event_loop().time() - start
-            return (None, duration) if retry_timing else None
-        error_msg = (
-            f"{error_msg} Error: {e}"
-            if error_msg
-            else f"An error occurred in async execution: {e}"
-        )
-        if suppress_err:
-            duration = asyncio.get_event_loop().time() - start
-            return (retry_default, duration) if retry_timing else retry_default
-        else:
-            raise RuntimeError(error_msg) from e
+        throw new Error(errMsg);
+    }
+}

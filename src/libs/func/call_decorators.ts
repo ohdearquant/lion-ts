@@ -1,244 +1,227 @@
+import { ucall } from './ucall';
+import { isCoroutineFunc, forceAsync } from './utils';
+import { Throttle } from './throttle';
 
-class CallDecorator:
-    """A collection of decorators to enhance function calls."""
+type ErrorHandler<T> = (error: Error) => T | Promise<T>;
+type ErrorMap<T> = Record<string, ErrorHandler<T>>;
+type TimedResult<T> = [T, number];
 
-    @staticmethod
-    def retry(
-        num_retries: int = 0,
-        initial_delay: float = 0,
-        retry_delay: float = 0,
-        backoff_factor: float = 1,
-        retry_default: Any = UNDEFINED,
-        retry_timeout: float | None = None,
-        retry_timing: bool = False,
-        verbose_retry: bool = True,
-        error_msg: str | None = None,
-        error_map: dict[type, Callable[[Exception], None]] | None = None,
-    ) -> Callable[[F], F]:
-        """Decorator to automatically retry a function call on failure.
+interface RetryOptions<T> {
+    numRetries?: number;
+    initialDelay?: number;
+    retryDelay?: number;
+    backoffFactor?: number;
+    retryDefault?: T;
+    retryTimeout?: number | null;
+    retryTiming?: boolean;
+    verboseRetry?: boolean;
+    errorMsg?: string | null;
+    errorMap?: ErrorMap<T> | null;
+}
 
-        Args:
-            retries: Number of retry attempts.
-            initial_delay: Initial delay before retrying.
-            delay: Delay between retries.
-            backoff_factor: Factor to increase delay after each retry.
-            default: Default value to return on failure.
-            timeout: Timeout for each function call.
-            timing: If True, logs the time taken for each call.
-            verbose: If True, logs the retries.
-            error_msg: Custom error message on failure.
-            error_map: A map of exception types to handler functions.
+type MethodDecorator<T> = (
+    target: any,
+    propertyKey: string,
+    descriptor: TypedPropertyDescriptor<T>
+) => TypedPropertyDescriptor<T>;
 
-        Returns:
-            The decorated function.
-        """
+/**
+ * A collection of decorators to enhance function calls.
+ */
+export class CallDecorator {
+    /**
+     * Decorator to automatically retry a function call on failure.
+     * 
+     * @param options Retry configuration options
+     */
+    static retry<T>(
+        options: RetryOptions<T> & { retryTiming: true }
+    ): MethodDecorator<(...args: any[]) => Promise<TimedResult<T>>>;
+    static retry<T>(
+        options?: RetryOptions<T>
+    ): MethodDecorator<(...args: any[]) => Promise<T>>;
+    static retry<T>(options: RetryOptions<T> = {}) {
+        return function(
+            target: any,
+            propertyKey: string,
+            descriptor: TypedPropertyDescriptor<(...args: any[]) => Promise<T | TimedResult<T>>>
+        ) {
+            const originalMethod = descriptor.value!;
+            
+            descriptor.value = async function(...args: any[]) {
+                let attempts = 0;
+                let currentDelay = options.retryDelay ?? 0;
+                const maxAttempts = (options.numRetries ?? 0) + 1;
+                const initialDelay = options.initialDelay ?? 0;
 
-        def decorator(func: F) -> F:
-            @wraps(func)
-            async def wrapper(*args, **kwargs) -> Any:
-                return await rcall(
-                    func,
-                    *args,
-                    num_retries=num_retries,
-                    initial_delay=initial_delay,
-                    retry_delay=retry_delay,
-                    backoff_factor=backoff_factor,
-                    retry_default=retry_default,
-                    retry_timeout=retry_timeout,
-                    retry_timing=retry_timing,
-                    verbose_retry=verbose_retry,
-                    error_msg=error_msg,
-                    error_map=error_map,
-                    **kwargs,
-                )
+                if (initialDelay > 0) {
+                    await new Promise(resolve => setTimeout(resolve, initialDelay * 1000));
+                }
 
-            return wrapper
+                while (true) {
+                    try {
+                        if (options.retryTiming) {
+                            const startTime = performance.now();
+                            const result = await Promise.race([
+                                originalMethod.apply(this, args),
+                                options.retryTimeout ? new Promise<never>((_, reject) => 
+                                    setTimeout(() => reject(new Error('Timeout')), options.retryTimeout! * 1000)
+                                ) : Promise.resolve(null)
+                            ]) as T;
+                            const endTime = performance.now();
+                            return [result, (endTime - startTime) / 1000] as TimedResult<T>;
+                        }
 
-        return decorator
+                        return await Promise.race([
+                            originalMethod.apply(this, args),
+                            options.retryTimeout ? new Promise<never>((_, reject) => 
+                                setTimeout(() => reject(new Error('Timeout')), options.retryTimeout! * 1000)
+                            ) : Promise.resolve(null)
+                        ]) as T;
+                    } catch (e) {
+                        const error = e as Error;
+                        attempts++;
 
-    @staticmethod
-    def throttle(period: float) -> Callable[[F], F]:
-        """Decorator to limit the execution frequency of a function.
+                        if (options.errorMap && error.constructor.name in options.errorMap) {
+                            const handler = options.errorMap[error.constructor.name];
+                            return await ucall(handler, error);
+                        }
 
-        Args:
-            period: Minimum time in seconds between function calls.
-
-        Returns:
-            The decorated function.
-        """
-
-        def decorator(func: F) -> F:
-            if not is_coroutine_func(func):
-                func = force_async(func)
-            throttle_instance = Throttle(period)
-
-            @wraps(func)
-            async def wrapper(*args, **kwargs):
-                await throttle_instance(func)(*args, **kwargs)
-                return await func(*args, **kwargs)
-
-            return wrapper
-
-        return decorator
-
-    @staticmethod
-    def max_concurrent(limit: int) -> Callable[[F], F]:
-        """Decorator to limit the maximum number of concurrent executions.
-
-        Args:
-            limit: Maximum number of concurrent executions.
-
-        Returns:
-            The decorated function.
-        """
-
-        def decorator(func: F) -> F:
-            if not is_coroutine_func(func):
-                func = force_async(func)
-            semaphore = asyncio.Semaphore(limit)
-
-            @wraps(func)
-            async def wrapper(*args, **kwargs):
-                async with semaphore:
-                    return await func(*args, **kwargs)
-
-            return wrapper
-
-        return decorator
-
-    @staticmethod
-    def compose(*functions: Callable[[T], T]) -> Callable[[F], F]:
-        """Decorator to compose multiple functions, applying in sequence.
-
-        Args:
-            functions: Functions to apply in sequence.
-
-        Returns:
-            The decorated function.
-        """
-
-        def decorator(func: F) -> F:
-            @wraps(func)
-            async def async_wrapper(*args, **kwargs):
-                value = await ucall(func, *args, **kwargs)
-                for function in functions:
-                    try:
-                        value = await ucall(function, value)
-                    except Exception as e:
-                        raise ValueError(f"Error in function {function.__name__}: {e}")
-                return value
-
-            return async_wrapper
-
-        return decorator
-
-    @staticmethod
-    def pre_post_process(
-        preprocess: Callable[..., Any] | None = None,
-        postprocess: Callable[..., Any] | None = None,
-        preprocess_args: Sequence[Any] = (),
-        preprocess_kwargs: dict[str, Any] = {},
-        postprocess_args: Sequence[Any] = (),
-        postprocess_kwargs: dict[str, Any] = {},
-    ) -> Callable[[F], F]:
-        """Decorator to apply pre-processing and post-processing functions.
-
-        Args:
-            preprocess: Function to apply before the main function.
-            postprocess: Function to apply after the main function.
-            preprocess_args: Arguments for the preprocess function.
-            preprocess_kwargs: Keyword arguments for preprocess function.
-            postprocess_args: Arguments for the postprocess function.
-            postprocess_kwargs: Keyword arguments for postprocess function.
-
-        Returns:
-            The decorated function.
-        """
-
-        def decorator(func: F) -> F:
-            @wraps(func)
-            async def async_wrapper(*args, **kwargs) -> Any:
-                preprocessed_args = (
-                    [
-                        await ucall(
-                            preprocess,
-                            arg,
-                            *preprocess_args,
-                            **preprocess_kwargs,
-                        )
-                        for arg in args
-                    ]
-                    if preprocess
-                    else args
-                )
-                preprocessed_kwargs = (
-                    {
-                        k: await ucall(
-                            preprocess,
-                            v,
-                            *preprocess_args,
-                            **preprocess_kwargs,
-                        )
-                        for k, v in kwargs.items()
+                        if (attempts < maxAttempts) {
+                            if (options.verboseRetry ?? true) {
+                                console.log(
+                                    `Attempt ${attempts}/${maxAttempts} failed: ${error}, retrying...`
+                                );
+                            }
+                            await new Promise(resolve => 
+                                setTimeout(resolve, currentDelay * 1000)
+                            );
+                            currentDelay *= options.backoffFactor ?? 1;
+                        } else {
+                            if (options.retryDefault !== undefined) {
+                                return options.retryDefault;
+                            }
+                            throw error;
+                        }
                     }
-                    if preprocess
-                    else kwargs
-                )
-                result = await ucall(func, *preprocessed_args, **preprocessed_kwargs)
+                }
+            };
 
-                return (
-                    await ucall(
-                        postprocess,
-                        result,
-                        *postprocess_args,
-                        **postprocess_kwargs,
-                    )
-                    if postprocess
-                    else result
-                )
+            return descriptor;
+        };
+    }
 
-            return async_wrapper
+    /**
+     * Decorator to limit the execution frequency of a function.
+     * 
+     * @param period Minimum time in seconds between function calls
+     */
+    static throttle(period: number): MethodDecorator<(...args: any[]) => Promise<any>> {
+        return function(
+            target: any,
+            propertyKey: string,
+            descriptor: TypedPropertyDescriptor<(...args: any[]) => Promise<any>>
+        ) {
+            const originalMethod = descriptor.value!;
+            const throttleInstance = new Throttle(period);
 
-        return decorator
+            descriptor.value = async function(...args: any[]) {
+                return throttleInstance.apply(originalMethod.bind(this))(...args);
+            };
 
-    @staticmethod
-    def map(function: Callable[[Any], Any]) -> Callable:
-        """Decorator to map a function over async function results.
+            return descriptor;
+        };
+    }
 
-        Applies a mapping function to each element in the list returned
-        by the decorated function. Useful for post-processing results of
-        asynchronous operations, such as transforming data fetched from
-        an API or processing items in a collection concurrently.
+    /**
+     * Decorator to limit the maximum number of concurrent executions.
+     * 
+     * @param limit Maximum number of concurrent executions
+     */
+    static maxConcurrent(limit: number): MethodDecorator<(...args: any[]) => Promise<any>> {
+        return function(
+            target: any,
+            propertyKey: string,
+            descriptor: TypedPropertyDescriptor<(...args: any[]) => Promise<any>>
+        ) {
+            const originalMethod = descriptor.value!;
+            const semaphore = {
+                queue: [] as Array<() => void>,
+                count: 0,
+                async acquire() {
+                    if (this.count >= limit) {
+                        await new Promise<void>(resolve => this.queue.push(resolve));
+                    }
+                    this.count++;
+                },
+                release() {
+                    this.count--;
+                    const next = this.queue.shift();
+                    if (next) next();
+                }
+            };
 
-        Args:
-            function: Mapping function to apply to each element.
+            descriptor.value = async function(...args: any[]) {
+                await semaphore.acquire();
+                try {
+                    return await originalMethod.apply(this, args);
+                } finally {
+                    semaphore.release();
+                }
+            };
 
-        Returns:
-            Decorated async function with transformed results.
+            return descriptor;
+        };
+    }
 
-        Examples:
-            >>> @CallDecorator.map(lambda x: x.upper())
-            ... async def get_names():
-            ...     return ["alice", "bob", "charlie"]
-            ... # `get_names` now returns ["ALICE", "BOB", "CHARLIE"]
-        """
+    /**
+     * Decorator to compose multiple functions, applying in sequence.
+     * 
+     * @param functions Functions to apply in sequence
+     */
+    static compose<T>(...functions: Array<(value: any) => any>): MethodDecorator<(...args: any[]) => Promise<T>> {
+        return function(
+            target: any,
+            propertyKey: string,
+            descriptor: TypedPropertyDescriptor<(...args: any[]) => Promise<T>>
+        ) {
+            const originalMethod = descriptor.value!;
+            
+            descriptor.value = async function(...args: any[]) {
+                let value = await originalMethod.apply(this, args);
+                for (const func of functions) {
+                    try {
+                        value = await ucall(func, value);
+                    } catch (e) {
+                        throw new Error(`Error in function ${func.name}: ${e}`);
+                    }
+                }
+                return value;
+            };
 
-        def decorator(func: Callable[..., list[Any]]) -> Callable:
-            if is_coroutine_func(func):
+            return descriptor;
+        };
+    }
 
-                @wraps(func)
-                async def async_wrapper(*args, **kwargs) -> list[Any]:
-                    values = await func(*args, **kwargs)
-                    return [function(value) for value in values]
+    /**
+     * Decorator to map a function over async function results.
+     * 
+     * @param func Mapping function to apply to each element
+     */
+    static map<T>(func: (value: any) => T): MethodDecorator<(...args: any[]) => Promise<T[]>> {
+        return function(
+            target: any,
+            propertyKey: string,
+            descriptor: TypedPropertyDescriptor<(...args: any[]) => Promise<T[]>>
+        ) {
+            const originalMethod = descriptor.value!;
+            
+            descriptor.value = async function(...args: any[]) {
+                const values = await originalMethod.apply(this, args);
+                return values.map(func);
+            };
 
-                return async_wrapper
-            else:
-
-                @wraps(func)
-                def sync_wrapper(*args, **kwargs) -> list[Any]:
-                    values = func(*args, **kwargs)
-                    return [function(value) for value in values]
-
-                return sync_wrapper
-
-        return decorator
+            return descriptor;
+        };
+    }
+}

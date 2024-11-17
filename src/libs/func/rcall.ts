@@ -1,171 +1,160 @@
+import { UNDEFINED } from '../../constants';
+import { ucall } from './ucall';
 
-async def rcall(
-    func: Callable[..., T],
-    /,
-    *args: Any,
-    num_retries: int = 0,
-    initial_delay: float = 0,
-    retry_delay: float = 0,
-    backoff_factor: float = 1,
-    retry_default: Any = UNDEFINED,
-    retry_timeout: float | None = None,
-    retry_timing: bool = False,
-    verbose_retry: bool = True,
-    error_msg: str | None = None,
-    error_map: dict[type, Callable[[Exception], None]] | None = None,
-    **kwargs: Any,
-) -> T | tuple[T, float]:
-    """Retry a function asynchronously with customizable options.
+type ErrorHandler<T> = (error: Error) => T | Promise<T>;
+type ErrorMap<T> = Record<string, ErrorHandler<T>>;
 
-    Executes a function with specified retry logic, timing, and error handling.
+interface RetryOptions<T> {
+    numRetries?: number;
+    initialDelay?: number;
+    retryDelay?: number;
+    backoffFactor?: number;
+    retryDefault?: T;
+    retryTimeout?: number | null;
+    retryTiming?: boolean;
+    verboseRetry?: boolean;
+    errorMsg?: string | null;
+    errorMap?: ErrorMap<T> | null;
+}
 
-    Args:
-        func: The function to execute (coroutine or regular).
-        *args: Positional arguments for the function.
-        num_retries: Number of retry attempts (default: 0).
-        initial_delay: Delay before first attempt (seconds).
-        retry_delay: Delay between retry attempts (seconds).
-        backoff_factor: Factor to increase delay after each retry.
-        retry_default: Value to return if all attempts fail.
-        retry_timeout: Timeout for each function execution (seconds).
-        retry_timing: If True, return execution duration.
-        verbose_retry: If True, print retry messages.
-        error_msg: Custom error message prefix.
-        error_map: Dict mapping exception types to error handlers.
-        **kwargs: Additional keyword arguments for the function.
+/**
+ * Retry a function asynchronously with customizable options.
+ * 
+ * @param func The function to execute (coroutine or regular)
+ * @param arg The argument to pass to the function
+ * @param options Configuration options
+ * @returns Function result, optionally with duration
+ * 
+ * @throws {Error} If function fails after all retries
+ * @throws {Error} If execution exceeds retryTimeout
+ * 
+ * @example
+ * ```typescript
+ * async function flakyFunc(x: number) {
+ *     if (Math.random() < 0.5) {
+ *         throw new Error("Random failure");
+ *     }
+ *     return x * 2;
+ * }
+ * 
+ * const result = await rcall(flakyFunc, 5, { numRetries: 3 });
+ * console.log(result); // 10
+ * ```
+ */
+export async function rcall<T, U>(
+    func: (arg: T) => U | Promise<U>,
+    arg: T,
+    options: RetryOptions<U> & { retryTiming: true }
+): Promise<[U, number]>;
+export async function rcall<T, U>(
+    func: (arg: T) => U | Promise<U>,
+    arg: T,
+    options?: RetryOptions<U>
+): Promise<U>;
+export async function rcall<T, U>(
+    func: (arg: T) => U | Promise<U>,
+    arg: T,
+    options: RetryOptions<U> = {}
+): Promise<U | [U, number]> {
+    const {
+        numRetries = 0,
+        initialDelay = 0,
+        retryDelay: initialRetryDelay = 0,
+        backoffFactor = 1,
+        retryDefault = undefined,
+        retryTimeout = null,
+        retryTiming = false,
+        verboseRetry = true,
+        errorMsg = null,
+        errorMap = null
+    } = options;
 
-    Returns:
-        T | tuple[T, float]: Function result, optionally with duration.
+    let lastException: Error | null = null;
+    let currentDelay = initialRetryDelay;
+    const startTime = retryTiming ? performance.now() : 0;
 
-    Raises:
-        RuntimeError: If function fails after all retries.
-        asyncio.TimeoutError: If execution exceeds retry_timeout.
+    if (initialDelay > 0) {
+        await new Promise(resolve => setTimeout(resolve, initialDelay * 1000));
+    }
 
-    Examples:
-        >>> async def flaky_func(x):
-        ...     if random.random() < 0.5:
-        ...         raise ValueError("Random failure")
-        ...     return x * 2
-        >>> result = await rcall(flaky_func, 5, num_retries=3)
-        >>> print(result)
-        10
+    async function executeWithTimeout<V>(
+        operation: () => Promise<V>
+    ): Promise<V> {
+        if (!retryTimeout) {
+            return operation();
+        }
+        const timeoutPromise = new Promise<never>((_, reject) => {
+            const timeoutId = setTimeout(() => {
+                clearTimeout(timeoutId);
+                reject(new Error('Timeout'));
+            }, retryTimeout * 1000);
+        });
+        return Promise.race([
+            operation(),
+            timeoutPromise
+        ]);
+    }
 
-    Note:
-        - Supports both coroutine and regular functions.
-        - Implements exponential backoff for retries.
-        - Can return execution timing for performance analysis.
-    """
-    last_exception = None
-    result = None
+    for (let attempt = 0; attempt <= numRetries; attempt++) {
+        try {
+            const result = await executeWithTimeout(() => ucall(func, arg));
+            if (retryTiming) {
+                const duration = (performance.now() - startTime) / 1000;
+                return [result, duration] as [U, number];
+            }
+            return result;
+        } catch (e) {
+            const error = e as Error;
+            lastException = error;
 
-    await asyncio.sleep(initial_delay)
-    for attempt in range(num_retries + 1):
-        try:
-            if num_retries == 0:
-                if retry_timing:
-                    result, duration = await _rcall(
-                        func,
-                        *args,
-                        retry_timeout=retry_timeout,
-                        retry_timing=True,
-                        **kwargs,
-                    )
-                    return result, duration
-                result = await _rcall(
-                    func,
-                    *args,
-                    retry_timeout=retry_timeout,
-                    **kwargs,
-                )
-                return result
-            err_msg = f"Attempt {attempt + 1}/{num_retries + 1}: {error_msg or ''}"
-            if retry_timing:
-                result, duration = await _rcall(
-                    func,
-                    *args,
-                    error_msg=err_msg,
-                    retry_timeout=retry_timeout,
-                    retry_timing=True,
-                    **kwargs,
-                )
-                return result, duration
+            if (errorMap && error.constructor.name in errorMap) {
+                const handler = errorMap[error.constructor.name];
+                const handlerResult = await ucall(handler, error);
+                if (retryTiming) {
+                    const duration = (performance.now() - startTime) / 1000;
+                    return [handlerResult, duration] as [U, number];
+                }
+                return handlerResult;
+            }
 
-            result = await _rcall(
-                func,
-                *args,
-                error_msg=err_msg,
-                retry_timeout=retry_timeout,
-                **kwargs,
-            )
-            return result
-        except Exception as e:
-            last_exception = e
-            if error_map and type(e) in error_map:
-                error_map[type(e)](e)
-            if attempt < num_retries:
-                if verbose_retry:
-                    print(
-                        f"Attempt {attempt + 1}/{num_retries + 1} failed: {e},"
-                        " retrying..."
-                    )
-                await asyncio.sleep(retry_delay)
-                retry_delay *= backoff_factor
-            else:
-                break
+            if (attempt < numRetries) {
+                if (verboseRetry) {
+                    console.log(
+                        `Attempt ${attempt + 1}/${numRetries + 1} failed: ${error}, retrying...`
+                    );
+                }
+                await new Promise(resolve => 
+                    setTimeout(resolve, currentDelay * 1000)
+                );
+                currentDelay *= backoffFactor;
+            }
+        }
+    }
 
-    if retry_default is not UNDEFINED:
-        return retry_default
+    if (retryDefault !== undefined) {
+        if (retryTiming) {
+            const duration = (performance.now() - startTime) / 1000;
+            return [retryDefault, duration] as [U, number];
+        }
+        return retryDefault;
+    }
 
-    if last_exception is not None:
-        if error_map and type(last_exception) in error_map:
-            handler = error_map[type(last_exception)]
-            if asyncio.iscoroutinefunction(handler):
-                return await handler(last_exception)
-            else:
-                return handler(last_exception)
-        raise RuntimeError(
-            f"{error_msg or ''} Operation failed after {num_retries + 1} "
-            f"attempts: {last_exception}"
-        ) from last_exception
+    if (lastException) {
+        if (errorMap && lastException.constructor.name in errorMap) {
+            const handler = errorMap[lastException.constructor.name];
+            const handlerResult = await ucall(handler, lastException);
+            if (retryTiming) {
+                const duration = (performance.now() - startTime) / 1000;
+                return [handlerResult, duration] as [U, number];
+            }
+            return handlerResult;
+        }
+        throw new Error(
+            `${errorMsg || ''} Operation failed after ${numRetries + 1} attempts: ${lastException}`
+        );
+    }
 
-    raise RuntimeError(
-        f"{error_msg or ''} Operation failed after {num_retries + 1} attempts"
-    )
-
-
-async def _rcall(
-    func: Callable[..., T],
-    *args: Any,
-    retry_delay: float = 0,
-    error_msg: str | None = None,
-    ignore_err: bool = False,
-    retry_timing: bool = False,
-    retry_default: Any = None,
-    retry_timeout: float | None = None,
-    **kwargs: Any,
-) -> T | tuple[T, float]:
-    start_time = _t()
-
-    try:
-        await asyncio.sleep(retry_delay)
-        if retry_timeout is not None:
-            result = await asyncio.wait_for(
-                ucall(func, *args, **kwargs), timeout=retry_timeout
-            )
-        else:
-            result = await ucall(func, *args, **kwargs)
-        duration = _t() - start_time
-        return (result, duration) if retry_timing else result
-    except TimeoutError as e:
-        error_msg = f"{error_msg or ''} Timeout {retry_timeout} seconds exceeded"
-        if ignore_err:
-            duration = _t() - start_time
-            return (retry_default, duration) if retry_timing else retry_default
-        else:
-            raise TimeoutError(error_msg) from e
-    except Exception:
-        if ignore_err:
-            duration = _t() - start_time
-            return (retry_default, duration) if retry_timing else retry_default
-        else:
-            raise
+    throw new Error(
+        `${errorMsg || ''} Operation failed after ${numRetries + 1} attempts`
+    );
+}

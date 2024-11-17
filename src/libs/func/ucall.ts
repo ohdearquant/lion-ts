@@ -1,62 +1,52 @@
+import { isCoroutineFunc, forceAsync, customErrorHandler } from './utils';
 
-async def ucall(
-    func: Callable[..., T],
-    /,
-    *args: Any,
-    error_map: dict[type, Callable[[Exception], None]] | None = None,
-    **kwargs: Any,
-) -> T:
-    """Execute a function asynchronously with error handling.
+type ErrorHandler = (error: Error) => any;
+type ErrorMap = Record<string, ErrorHandler>;
 
-    Ensures asynchronous execution of both coroutine and regular functions,
-    managing event loops and applying custom error handling.
+/**
+ * Execute a function asynchronously with error handling.
+ *
+ * @param func The function to be executed (coroutine or regular)
+ * @param arg The argument to pass to the function
+ * @param options Configuration options
+ * @returns The result of the function call
+ * 
+ * @throws {Error} Any unhandled exception from the function execution
+ * 
+ * @example
+ * ```typescript
+ * async function exampleFunc(x: number) {
+ *     return x * 2;
+ * }
+ * await ucall(exampleFunc, 5);  // 10
+ * 
+ * await ucall(x => x + 1, 5);  // Non-coroutine function, returns 6
+ * ```
+ */
+export async function ucall<T, U>(
+    func: (arg: T) => U | Promise<U>,
+    arg: T,
+    options: {
+        errorMap?: ErrorMap | null;
+    } = {}
+): Promise<U> {
+    const { errorMap = null } = options;
 
-    Args:
-        func: The function to be executed (coroutine or regular).
-        *args: Positional arguments for the function.
-        error_map: Dict mapping exception types to error handlers.
-        **kwargs: Keyword arguments for the function.
-
-    Returns:
-        T: The result of the function call.
-
-    Raises:
-        Exception: Any unhandled exception from the function execution.
-
-    Examples:
-        >>> async def example_func(x):
-        ...     return x * 2
-        >>> await ucall(example_func, 5)
-        10
-        >>> await ucall(lambda x: x + 1, 5)  # Non-coroutine function
-        6
-
-    Note:
-        - Automatically wraps non-coroutine functions for async execution.
-        - Manages event loop creation and closure when necessary.
-        - Applies custom error handling based on the provided error_map.
-    """
-    try:
-        if not is_coroutine_func(func):
-            func = force_async(func)
-
-        # Checking for a running event loop
-        try:
-            loop = asyncio.get_running_loop()
-            if loop.is_running():
-                return await func(*args, **kwargs)
-            else:
-                return await asyncio.run(func(*args, **kwargs))
-
-        except RuntimeError:  # No running event loop
-            loop = asyncio.new_event_loop()
-            result = await func(*args, **kwargs)
-            loop.close()
-            return result
-
-    except Exception as e:
-        if error_map:
-
-            return await custom_error_handler(e, error_map)
-        raise e
-
+    try {
+        if (isCoroutineFunc(func)) {
+            return await func(arg);
+        } else {
+            const result = func(arg);
+            return await Promise.resolve(result);
+        }
+    } catch (e) {
+        const error = e as Error;
+        if (errorMap) {
+            const result = await customErrorHandler(error, errorMap);
+            if (result !== null) {
+                return result as U;
+            }
+        }
+        throw error;
+    }
+}
