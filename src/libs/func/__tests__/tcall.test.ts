@@ -19,10 +19,6 @@ function syncFuncWithError(x: number): number {
     throw new Error("mock error");
 }
 
-async function mockHandler(e: Error): Promise<number> {
-    return -1;
-}
-
 describe('Timed Call Function', () => {
     test('handles async function', async () => {
         const result = await tcall(asyncFunc, 5);
@@ -38,12 +34,6 @@ describe('Timed Call Function', () => {
         const result = await tcall(asyncFunc, 5, { retryTiming: true });
         expect(result[0]).toBe(10);
         expect(result[1]).toBeGreaterThan(0);
-    });
-
-    test('handles error mapping', async () => {
-        const errorMap = { Error: mockHandler };
-        const result = await tcall(asyncFuncWithError, 5, { errorMap });
-        expect(result).toBe(-1);
     });
 
     test('handles timeout', async () => {
@@ -71,16 +61,6 @@ describe('Timed Call Function', () => {
         await expect(tcall(asyncFuncWithError, 5, {
             errorMsg: 'Custom error: '
         })).rejects.toThrow('Custom error: ');
-    });
-
-    test('handles timing with error mapping', async () => {
-        const errorMap = { Error: mockHandler };
-        const result = await tcall(asyncFuncWithError, 5, {
-            errorMap,
-            retryTiming: true
-        });
-        expect(result[0]).toBe(-1);
-        expect(result[1]).toBeGreaterThan(0);
     });
 
     test('handles timing with error suppression', async () => {

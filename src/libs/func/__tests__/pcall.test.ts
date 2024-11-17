@@ -19,10 +19,6 @@ function syncFuncWithError(): number {
     throw new Error("mock error");
 }
 
-async function mockHandler(e: Error): Promise<number> {
-    return -1; // Return number to maintain type consistency
-}
-
 describe('Parallel Call Function', () => {
     test('basic functionality', async () => {
         const funcs = Array(5).fill(asyncFunc);
@@ -47,14 +43,6 @@ describe('Parallel Call Function', () => {
             retryDefault: 0
         });
         expect(result).toEqual([0, 0, 0, 0, 0]);
-    });
-
-    test('handles error mapping', async () => {
-        type ErrorHandlers<T> = Record<string, (e: Error) => Promise<T> | T>;
-        const errorMap: ErrorHandlers<number> = { Error: mockHandler };
-        const funcs = Array(5).fill(asyncFuncWithError);
-        const result = await pcall<any, number>(funcs, { errorMap });
-        expect(result).toEqual([-1, -1, -1, -1, -1]);
     });
 
     test('handles max concurrent', async () => {
@@ -106,15 +94,6 @@ describe('Parallel Call Function', () => {
             expect(typeof value).toBe('number');
             expect(typeof duration).toBe('number');
         });
-    });
-
-    test('handles error mapping with type safety', async () => {
-        type ErrorHandlers<T> = Record<string, (e: Error) => Promise<T> | T>;
-        const errorMap: ErrorHandlers<number> = { Error: mockHandler };
-        const funcs = Array(3).fill(asyncFuncWithError);
-        const result = await pcall<any, number>(funcs, { errorMap });
-        const typedResult = result as number[];
-        expect(typedResult.every(x => typeof x === 'number')).toBe(true);
     });
 
     test('handles functions with arguments', async () => {

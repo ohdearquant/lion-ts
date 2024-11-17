@@ -2,8 +2,6 @@ import { ucall } from './ucall';
 import { isCoroutineFunc, forceAsync } from './utils';
 import { Throttle } from './throttle';
 
-type ErrorHandler<T> = (error: Error) => T | Promise<T>;
-type ErrorMap<T> = Record<string, ErrorHandler<T>>;
 type TimedResult<T> = [T, number];
 
 interface RetryOptions<T> {
@@ -16,7 +14,6 @@ interface RetryOptions<T> {
     retryTiming?: boolean;
     verboseRetry?: boolean;
     errorMsg?: string | null;
-    errorMap?: ErrorMap<T> | null;
 }
 
 type MethodDecorator<T> = (
@@ -81,11 +78,6 @@ export class CallDecorator {
                     } catch (e) {
                         const error = e as Error;
                         attempts++;
-
-                        if (options.errorMap && error.constructor.name in options.errorMap) {
-                            const handler = options.errorMap[error.constructor.name];
-                            return await ucall(handler, error);
-                        }
 
                         if (attempts < maxAttempts) {
                             if (options.verboseRetry ?? true) {

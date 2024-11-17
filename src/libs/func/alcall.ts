@@ -67,120 +67,96 @@ export async function alcall<T, U>(
         await new Promise(resolve => setTimeout(resolve, initialDelay * 1000));
     }
 
-    const semaphore = maxConcurrent ? {
-        queue: [] as Array<() => void>,
-        count: 0,
-        async acquire() {
-            if (this.count >= maxConcurrent) {
-                await new Promise<void>(resolve => this.queue.push(resolve));
-            }
-            this.count++;
-        },
-        release() {
-            this.count--;
-            const next = this.queue.shift();
-            if (next) next();
-        }
-    } : null;
+    const inputList = toList(input);
+    const results: Array<TaskResult<U>> = [];
 
+    const concurrency = maxConcurrent || inputList.length;
     const throttleDelay = throttlePeriod ? throttlePeriod * 1000 : 0;
 
-    type TaskResult = [number, U, number?];
+    type TaskResult<T> = [number, T, number?];
 
-    async function executeTask(
-        item: T,
-        index: number
-    ): Promise<TaskResult> {
-        let attempts = 0;
-        let currentDelay = retryDelay;
-        const startTime = retryTiming ? performance.now() : 0;
+    let currentIndex = 0;
 
-        async function executeWithTimeout(): Promise<U> {
-            if (!retryTimeout) {
-                return ucall(func, item);
-            }
-            const timeoutPromise = new Promise<never>((_, reject) => {
-                setTimeout(() => reject(new Error('Timeout')), retryTimeout * 1000);
-            });
-            return Promise.race([
-                ucall(func, item),
-                timeoutPromise
-            ]);
-        }
+    async function worker(): Promise<void> {
+        while (currentIndex < inputList.length) {
+            const index = currentIndex++;
+            const item = inputList[index];
 
-        while (true) {
-            try {
-                const result = await executeWithTimeout();
-                if (retryTiming) {
-                    const duration = (performance.now() - startTime) / 1000;
-                    return [index, result, duration];
-                }
-                return [index, result];
-            } catch (e) {
-                const error = e as Error;
+            const startTime = performance.now();
+            let attempts = 0;
+            let currentDelay = retryDelay;
+            const timeoutMillis = retryTimeout !== null && retryTimeout !== undefined ? retryTimeout * 1000 : null;
 
-                if (error.message === 'Timeout') {
-                    if (retryDefault !== undefined) {
-                        if (retryTiming) {
-                            const duration = (performance.now() - startTime) / 1000;
-                            return [index, retryDefault, duration];
-                        }
-                        return [index, retryDefault];
-                    }
-                    throw error;
-                }
-
+            while (true) {
                 attempts++;
-                if (attempts <= numRetries) {
+
+                try {
+                    let result: U;
+                    const elapsedTime = performance.now() - startTime;
+                    const remainingTime = timeoutMillis !== null ? timeoutMillis - elapsedTime : null;
+
+                    if (remainingTime !== null && remainingTime <= 0) {
+                        throw new Error('Timeout');
+                    }
+
+                    if (remainingTime !== null) {
+                        result = await Promise.race([
+                            ucall(func, item),
+                            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), remainingTime))
+                        ]);
+                    } else {
+                        result = await ucall(func, item);
+                    }
+
+                    const duration = (performance.now() - startTime) / 1000;
+                    const taskResult: TaskResult<U> = retryTiming ? [index, result, duration] : [index, result];
+                    results.push(taskResult);
+                    break;
+
+                } catch (error) {
+                    const err = error as Error;
+
+                    if (err.message === 'Timeout') {
+                        if (retryDefault !== undefined) {
+                            const duration = (performance.now() - startTime) / 1000;
+                            const taskResult: TaskResult<U> = retryTiming ? [index, retryDefault, duration] : [index, retryDefault];
+                            results.push(taskResult);
+                            break;
+                        }
+                        throw new Error('Timeout');
+                    }
+
+                    if (attempts > numRetries) {
+                        if (retryDefault !== undefined) {
+                            const duration = (performance.now() - startTime) / 1000;
+                            const taskResult: TaskResult<U> = retryTiming ? [index, retryDefault, duration] : [index, retryDefault];
+                            results.push(taskResult);
+                            break;
+                        }
+                        throw err;
+                    }
+
                     if (verboseRetry) {
                         console.log(
-                            `Attempt ${attempts}/${numRetries + 1} failed: ${error}, retrying...`
+                            `Attempt ${attempts}/${numRetries + 1} failed: ${err}, retrying...`
                         );
                     }
-                    await new Promise(resolve => 
+
+                    await new Promise(resolve =>
                         setTimeout(resolve, currentDelay * 1000)
                     );
                     currentDelay *= backoffFactor;
-                } else {
-                    if (retryDefault !== undefined) {
-                        if (retryTiming) {
-                            const duration = (performance.now() - startTime) / 1000;
-                            return [index, retryDefault, duration];
-                        }
-                        return [index, retryDefault];
-                    }
-                    throw error;
                 }
             }
-        }
-    }
 
-    async function task(
-        item: T,
-        index: number
-    ): Promise<TaskResult> {
-        if (semaphore) {
-            await semaphore.acquire();
-            try {
-                return await executeTask(item, index);
-            } finally {
-                semaphore.release();
+            if (throttleDelay > 0) {
+                await new Promise(resolve => setTimeout(resolve, throttleDelay));
             }
         }
-        return executeTask(item, index);
     }
 
-    const inputList = toList(input);
-    const tasks = inputList.map((item, index) => task(item, index));
-    const results: TaskResult[] = [];
-
-    for (const promise of tasks) {
-        const result = await promise;
-        results.push(result);
-        if (throttleDelay > 0) {
-            await new Promise(resolve => setTimeout(resolve, throttleDelay));
-        }
-    }
+    const workers = Array.from({ length: concurrency }, () => worker());
+    await Promise.all(workers);
 
     results.sort((a, b) => a[0] - b[0]);
 

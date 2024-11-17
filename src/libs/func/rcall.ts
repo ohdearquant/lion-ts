@@ -1,9 +1,6 @@
 import { UNDEFINED } from '../../constants';
 import { ucall } from './ucall';
 
-type ErrorHandler<T> = (error: Error) => T | Promise<T>;
-type ErrorMap<T> = Record<string, ErrorHandler<T>>;
-
 interface RetryOptions<T> {
     numRetries?: number;
     initialDelay?: number;
@@ -14,7 +11,6 @@ interface RetryOptions<T> {
     retryTiming?: boolean;
     verboseRetry?: boolean;
     errorMsg?: string | null;
-    errorMap?: ErrorMap<T> | null;
 }
 
 /**
@@ -65,8 +61,7 @@ export async function rcall<T, U>(
         retryTimeout = null,
         retryTiming = false,
         verboseRetry = true,
-        errorMsg = null,
-        errorMap = null
+        errorMsg = null
     } = options;
 
     let lastException: Error | null = null;
@@ -107,16 +102,6 @@ export async function rcall<T, U>(
             const error = e as Error;
             lastException = error;
 
-            if (errorMap && error.constructor.name in errorMap) {
-                const handler = errorMap[error.constructor.name];
-                const handlerResult = await ucall(handler, error);
-                if (retryTiming) {
-                    const duration = (performance.now() - startTime) / 1000;
-                    return [handlerResult, duration] as [U, number];
-                }
-                return handlerResult;
-            }
-
             if (attempt < numRetries) {
                 if (verboseRetry) {
                     console.log(
@@ -140,15 +125,6 @@ export async function rcall<T, U>(
     }
 
     if (lastException) {
-        if (errorMap && lastException.constructor.name in errorMap) {
-            const handler = errorMap[lastException.constructor.name];
-            const handlerResult = await ucall(handler, lastException);
-            if (retryTiming) {
-                const duration = (performance.now() - startTime) / 1000;
-                return [handlerResult, duration] as [U, number];
-            }
-            return handlerResult;
-        }
         throw new Error(
             `${errorMsg || ''} Operation failed after ${numRetries + 1} attempts: ${lastException}`
         );

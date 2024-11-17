@@ -1,9 +1,6 @@
 import { toList } from '../parse';
 import { alcall } from './alcall';
 
-type ErrorHandler<T> = (error: Error) => T | Promise<T>;
-type ErrorMap<T> = Record<string, ErrorHandler<T>>;
-
 interface BatchOptions<T> {
     batchSize: number;
     numRetries?: number;
@@ -15,7 +12,6 @@ interface BatchOptions<T> {
     retryTiming?: boolean;
     verboseRetry?: boolean;
     errorMsg?: string | null;
-    errorMap?: ErrorMap<T> | null;
     maxConcurrent?: number | null;
     throttlePeriod?: number | null;
     dropna?: boolean;
@@ -60,7 +56,6 @@ export async function* bcall<T, U>(
         retryTiming = false,
         verboseRetry = true,
         errorMsg = null,
-        errorMap = null,
         maxConcurrent = null,
         throttlePeriod = null,
         dropna = false
@@ -82,19 +77,30 @@ export async function* bcall<T, U>(
         retryTiming,
         verboseRetry,
         errorMsg,
-        errorMap,
         maxConcurrent,
         throttlePeriod,
         dropna
     };
 
+    async function processBatchWithTimeout(batch: T[]): Promise<U[]> {
+        if (!retryTimeout) {
+            return alcall(batch, func, commonOptions);
+        }
+
+        const timeoutPromise = new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error('Timeout')), retryTimeout * 1000);
+        });
+
+        const result = await Promise.race([
+            alcall(batch, func, commonOptions),
+            timeoutPromise
+        ]);
+        return result;
+    }
+
     for (let i = 0; i < inputList.length; i += batchSize) {
         const batch = inputList.slice(i, i + batchSize);
-        const batchResults = await alcall(
-            batch,
-            func,
-            commonOptions
-        );
+        const batchResults = await processBatchWithTimeout(batch);
         yield batchResults;
     }
 }

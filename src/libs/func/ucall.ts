@@ -1,14 +1,10 @@
-import { isCoroutineFunc, forceAsync, customErrorHandler } from './utils';
-
-type ErrorHandler = (error: Error) => any;
-type ErrorMap = Record<string, ErrorHandler>;
+import { isCoroutineFunc } from './utils';
 
 /**
- * Execute a function asynchronously with error handling.
+ * Execute a function asynchronously.
  *
  * @param func The function to be executed (coroutine or regular)
  * @param arg The argument to pass to the function
- * @param options Configuration options
  * @returns The result of the function call
  * 
  * @throws {Error} Any unhandled exception from the function execution
@@ -25,28 +21,12 @@ type ErrorMap = Record<string, ErrorHandler>;
  */
 export async function ucall<T, U>(
     func: (arg: T) => U | Promise<U>,
-    arg: T,
-    options: {
-        errorMap?: ErrorMap | null;
-    } = {}
+    arg: T
 ): Promise<U> {
-    const { errorMap = null } = options;
-
-    try {
-        if (isCoroutineFunc(func)) {
-            return await func(arg);
-        } else {
-            const result = func(arg);
-            return await Promise.resolve(result);
-        }
-    } catch (e) {
-        const error = e as Error;
-        if (errorMap) {
-            const result = await customErrorHandler(error, errorMap);
-            if (result !== null) {
-                return result as U;
-            }
-        }
-        throw error;
+    if (isCoroutineFunc(func)) {
+        return await func(arg);
+    } else {
+        const result = func(arg);
+        return await Promise.resolve(result);
     }
 }

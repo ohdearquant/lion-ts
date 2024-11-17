@@ -12,10 +12,6 @@ async function asyncFuncWithError(x: number): Promise<number> {
     return x * 2;
 }
 
-async function mockHandler(e: Error): Promise<number> {
-    return -1; // Return a number instead of string to match type
-}
-
 describe('Multiple Call Function', () => {
     test('handles single function', async () => {
         const inputs = [1, 2, 3, 4, 5];
@@ -44,13 +40,6 @@ describe('Multiple Call Function', () => {
             retryDefault: 0
         });
         expect(result).toEqual([2, 4, 0]);
-    });
-
-    test('handles error mapping', async () => {
-        const errorMap = { Error: mockHandler };
-        const inputs = [1, 2, 3];
-        const result = await mcall(inputs, asyncFuncWithError, { errorMap });
-        expect(result).toEqual([2, 4, -1]);
     });
 
     test('handles max concurrent', async () => {

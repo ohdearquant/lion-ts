@@ -25,10 +25,6 @@ function syncFuncWithError(x: number): number {
     return x * 2;
 }
 
-async function mockHandler(e: Error): Promise<string> {
-    return `handled: ${e.message}`;
-}
-
 describe('Batch Call Function', () => {
     test('basic functionality', async () => {
         const inputs = [1, 2, 3, 4, 5];
@@ -53,29 +49,20 @@ describe('Batch Call Function', () => {
     });
 
     test('handles timeout', async () => {
+        const slowFunc = async (x: number): Promise<number> => {
+            await new Promise(resolve => setTimeout(resolve, 200)); // Deliberately slow
+            return x * 2;
+        };
+
         const inputs = [1, 2, 3];
         await expect(async () => {
-            for await (const batch of bcall<number, number>(inputs, asyncFunc, {
+            const generator = bcall<number, number>(inputs, slowFunc, {
                 batchSize: 2,
-                retryTimeout: 0.05
-            })) {
-                // Process batch
-            }
-        }).rejects.toThrow();
-    });
-
-    test('handles error mapping', async () => {
-        type ErrorHandlers<T> = Record<string, (e: Error) => Promise<T> | T>;
-        const errorMap: ErrorHandlers<string> = { Error: mockHandler };
-        const inputs = [1, 2, 3, 4, 5];
-        const batches: Array<Array<string | number>> = [];
-        for await (const batch of bcall<number, string | number>(inputs, asyncFuncWithError, {
-            batchSize: 2,
-            errorMap
-        })) {
-            batches.push([...batch] as Array<string | number>);
-        }
-        expect(batches).toEqual([[2, 4], ["handled: mock error", 8], [10]]);
+                retryTimeout: 0.1, // 100ms timeout
+                retryDefault: undefined // Force throw on timeout
+            });
+            await generator.next(); // This should timeout
+        }).rejects.toThrow('Timeout');
     });
 
     test('handles max concurrent', async () => {
@@ -146,21 +133,6 @@ describe('Batch Call Function', () => {
         })) {
             const typedBatch = [...batch] as number[];
             expect(typedBatch.every(x => typeof x === 'number')).toBe(true);
-            batches.push(typedBatch);
-        }
-    });
-
-    test('handles error mapping with type safety', async () => {
-        type ErrorHandlers<T> = Record<string, (e: Error) => Promise<T> | T>;
-        const errorMap: ErrorHandlers<string> = { Error: mockHandler };
-        const inputs = [1, 2, 3];
-        const batches: Array<Array<string | number>> = [];
-        for await (const batch of bcall<number, string | number>(inputs, asyncFuncWithError, {
-            batchSize: 2,
-            errorMap
-        })) {
-            const typedBatch = [...batch] as Array<string | number>;
-            expect(typedBatch.every(x => typeof x === 'string' || typeof x === 'number')).toBe(true);
             batches.push(typedBatch);
         }
     });

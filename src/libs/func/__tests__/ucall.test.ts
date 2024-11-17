@@ -25,10 +25,6 @@ function syncFuncWithError(x: number): number {
     return x + 1;
 }
 
-async function mockHandler(e: Error): Promise<string> {
-    return `handled: ${e.message}`;
-}
-
 type Options = { add: number };
 
 async function asyncFuncWithKwargs(options: { x: number } & Options): Promise<number> {
@@ -53,12 +49,6 @@ describe('Universal Call Function', () => {
 
     test('handles sync functions with errors', async () => {
         await expect(ucall(syncFuncWithError, 3)).rejects.toThrow('mock error');
-    });
-
-    test('handles error mapping', async () => {
-        const errorMap = { Error: mockHandler };
-        const result = await ucall(asyncFuncWithError, 3, { errorMap });
-        expect(result).toBe('handled: mock error');
     });
 
     test('handles functions with additional arguments', async () => {

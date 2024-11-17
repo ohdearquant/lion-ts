@@ -1,9 +1,6 @@
 import { ucall } from './ucall';
 import { isCoroutineFunc } from './utils';
 
-type ErrorHandler<T> = (error: Error) => T | Promise<T>;
-type ErrorMap<T> = Record<string, ErrorHandler<T>>;
-
 interface TimingOptions<T> {
     initialDelay?: number;
     errorMsg?: string | null;
@@ -11,7 +8,6 @@ interface TimingOptions<T> {
     retryTiming?: boolean;
     retryTimeout?: number | null;
     retryDefault?: T;
-    errorMap?: ErrorMap<T> | null;
 }
 
 /**
@@ -58,8 +54,7 @@ export async function tcall<T, U>(
         suppressErr = false,
         retryTiming = false,
         retryTimeout = null,
-        retryDefault = null,
-        errorMap = null
+        retryDefault = null
     } = options;
 
     const start = performance.now();
@@ -100,12 +95,6 @@ export async function tcall<T, U>(
                 return retryTiming ? [retryDefault as U, duration] : retryDefault as U;
             }
             throw new Error(errMsg);
-        }
-
-        if (errorMap && error.constructor.name in errorMap) {
-            const handler = errorMap[error.constructor.name];
-            const handlerResult = await ucall(handler, error);
-            return retryTiming ? [handlerResult, duration] : handlerResult;
         }
 
         const errMsg = errorMsg

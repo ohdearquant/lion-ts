@@ -26,29 +26,6 @@ export function isCoroutineFunc(func: (...args: any[]) => any): boolean {
 }
 
 /**
- * Custom error handler for mapping error types to handlers.
- *
- * @param error The error to handle
- * @param errorMap Dictionary mapping exception types to error handlers
- * @returns Result from the error handler if found, otherwise logs error
- */
-export async function customErrorHandler<T>(
-    error: Error,
-    errorMap: Record<string, (error: Error) => T | Promise<T>>
-): Promise<T | null> {
-    for (const [errorType, handler] of Object.entries(errorMap)) {
-        if (error.constructor.name === errorType) {
-            if (isCoroutineFunc(handler)) {
-                return await handler(error);
-            }
-            return await Promise.resolve(handler(error));
-        }
-    }
-    console.error(`Unhandled error: ${error}`);
-    return null;
-}
-
-/**
  * Limit the concurrency of function execution using a semaphore.
  *
  * @param func The function to limit concurrency for

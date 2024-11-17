@@ -2,9 +2,6 @@ import { toList } from '../parse';
 import { rcall } from './rcall';
 import { alcall } from './alcall';
 
-type ErrorHandler<T> = (error: Error) => T | Promise<T>;
-type ErrorMap<T> = Record<string, ErrorHandler<T>>;
-
 interface MultiCallOptions<T> {
     explode?: boolean;
     numRetries?: number;
@@ -15,7 +12,6 @@ interface MultiCallOptions<T> {
     retryTimeout?: number | null;
     verboseRetry?: boolean;
     errorMsg?: string | null;
-    errorMap?: ErrorMap<T> | null;
     maxConcurrent?: number | null;
     throttlePeriod?: number | null;
     dropna?: boolean;

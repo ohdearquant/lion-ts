@@ -1,9 +1,6 @@
 import { ucall } from './ucall';
 import { isCoroutineFunc } from './utils';
 
-type ErrorHandler<T> = (error: Error) => T | Promise<T>;
-type ErrorMap<T> = Record<string, ErrorHandler<T>>;
-
 interface ParallelOptions<T> {
     numRetries?: number;
     initialDelay?: number;
@@ -14,7 +11,6 @@ interface ParallelOptions<T> {
     retryTiming?: boolean;
     verboseRetry?: boolean;
     errorMsg?: string | null;
-    errorMap?: ErrorMap<T> | null;
     maxConcurrent?: number | null;
     throttlePeriod?: number | null;
     arg?: any;
@@ -63,7 +59,6 @@ export async function pcall<T, A>(
         retryTiming = false,
         verboseRetry = true,
         errorMsg = null,
-        errorMap = null,
         maxConcurrent = null,
         throttlePeriod = null,
         arg
@@ -133,12 +128,6 @@ export async function pcall<T, A>(
                 return [index, result];
             } catch (e) {
                 const error = e as Error;
-                if (errorMap && error.constructor.name in errorMap) {
-                    const handler = errorMap[error.constructor.name];
-                    const handlerResult = await ucall(handler, error);
-                    return [index, handlerResult];
-                }
-
                 attempts++;
                 if (attempts <= numRetries) {
                     if (verboseRetry) {

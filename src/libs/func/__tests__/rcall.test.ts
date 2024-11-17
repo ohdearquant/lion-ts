@@ -11,10 +11,6 @@ async function asyncFuncWithError(x: number): Promise<number> {
     throw new Error("mock error");
 }
 
-async function mockHandler(e: Error): Promise<number> {
-    return -1;
-}
-
 describe('Retry Call Function', () => {
     test('handles successful call', async () => {
         const result = await rcall(asyncFunc, 5);
@@ -36,12 +32,6 @@ describe('Retry Call Function', () => {
             expect(result[0]).toBe(10);
             expect(result[1]).toBeGreaterThan(0);
         }
-    });
-
-    test('handles error mapping', async () => {
-        const errorMap = { Error: mockHandler };
-        const result = await rcall(asyncFuncWithError, 5, { errorMap });
-        expect(result).toBe(-1);
     });
 
     test('handles timeout', async () => {
@@ -80,19 +70,6 @@ describe('Retry Call Function', () => {
         const duration = (performance.now() - start) / 1000;
         // Initial delay (0.1) + Second delay (0.2) = 0.3s minimum
         expect(duration).toBeGreaterThanOrEqual(0.3);
-    });
-
-    test('handles timing with error mapping', async () => {
-        const errorMap = { Error: mockHandler };
-        const result = await rcall(asyncFuncWithError, 5, {
-            errorMap,
-            retryTiming: true
-        });
-        expect(Array.isArray(result)).toBe(true);
-        if (Array.isArray(result)) {
-            expect(result[0]).toBe(-1);
-            expect(result[1]).toBeGreaterThan(0);
-        }
     });
 
     test('handles timing with retries', async () => {

@@ -8,7 +8,7 @@ This module provides a collection of utility functions for handling function cal
 ```typescript
 async function ucall<T>(func: Callable<T>, ...args: any[]): Promise<T>
 ```
-Executes a function asynchronously with error handling. Handles both synchronous and asynchronous functions uniformly.
+Executes a function asynchronously. Handles both synchronous and asynchronous functions uniformly.
 
 ### rcall (Retry Call)
 ```typescript
@@ -32,7 +32,7 @@ Applies a function to each element of a list synchronously. Supports flattening,
 ```typescript
 async function alcall<T, U>(input: T[], func: (arg: T) => Promise<U>, options?: AsyncListOptions): Promise<U[]>
 ```
-Applies a function to each element of a list asynchronously. Supports concurrent execution, retries, and error handling.
+Applies a function to each element of a list asynchronously. Supports concurrent execution and retries.
 
 ### mcall (Multiple Call)
 ```typescript
@@ -44,13 +44,13 @@ Applies multiple functions to inputs, either by exploding functions across all i
 ```typescript
 async function pcall<T>(funcs: Array<() => T>, options?: ParallelOptions): Promise<T[]>
 ```
-Executes multiple functions in parallel with concurrency control and error handling.
+Executes multiple functions in parallel with concurrency control.
 
 ### bcall (Batch Call)
 ```typescript
 async function* bcall<T, U>(input: T[], func: (arg: T) => U, options: BatchOptions): AsyncGenerator<U[]>
 ```
-Processes inputs in batches, yielding results as they complete. Supports batch size control and error handling.
+Processes inputs in batches, yielding results as they complete. Supports batch size control.
 
 ## Decorators
 
@@ -97,7 +97,6 @@ Provides throttling functionality for rate-limiting function calls.
 - `retryTiming`: Return timing information
 - `verboseRetry`: Log retry attempts
 - `errorMsg`: Custom error message
-- `errorMap`: Custom error handlers
 
 ### AsyncListOptions
 - All RetryOptions plus:
@@ -147,22 +146,6 @@ class API {
 }
 ```
 
-## Error Handling
-
-All functions support custom error handling through the errorMap option:
-
-```typescript
-const errorMap = {
-    NetworkError: async (e) => ({ error: e.message }),
-    ValidationError: async (e) => null
-};
-
-const result = await rcall(fetchData, {
-    errorMap,
-    retryDefault: []
-});
-```
-
 ## Type Safety
 
 All functions are fully typed and support generic type parameters for input and output types:
@@ -191,7 +174,7 @@ const users = await alcall<number, User>(
 ## Best Practices
 
 1. Always specify explicit types for better type safety
-2. Use appropriate error handling for production code
+2. Use appropriate retry settings for production code
 3. Consider using decorators for consistent behavior across methods
 4. Use batching for large datasets
 5. Configure timeouts for external service calls
