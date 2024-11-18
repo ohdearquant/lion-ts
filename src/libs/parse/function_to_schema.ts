@@ -1,193 +1,205 @@
 import 'reflect-metadata';
+import { JsonSchema, JsonSchemaType } from './types';
 
 /**
- * OpenAI function schema types
- */
-interface OpenAIFunctionSchema {
-    type: 'function';
-    function: {
-        name: string;
-        description: string;
-        parameters: {
-            type: 'object';
-            properties: Record<string, ParameterSchema>;
-            required: string[];
-        };
-    };
-}
-
-interface ParameterSchema {
-    type: string;
-    description: string | null;
-}
-
-/**
- * Options for schema generation
+ * Options for function schema generation
  */
 interface SchemaOptions {
-    style?: 'google' | 'rest';
+    /** Whether to include docstring info */
+    includeDoc?: boolean;
+    /** Whether to include parameter types */
+    includeTypes?: boolean;
+    /** Whether to include return type */
+    includeReturn?: boolean;
+    /** Function description */
     functionDescription?: string;
+    /** Parameter descriptions */
     paramDescriptions?: Record<string, string>;
+    /** Parameter types (for when reflection is not available) */
+    paramTypes?: Record<string, JsonSchemaType>;
 }
 
 /**
- * TypeScript to JSON Schema type mapping
- */
-const typeMapping: Record<string, string> = {
-    'String': 'string',
-    'Number': 'number',
-    'Boolean': 'boolean',
-    'Object': 'object',
-    'Array': 'array',
-    'Any': 'any',
-    'Void': 'null',
-    'Undefined': 'null',
-    'Null': 'null',
-    // Add more type mappings as needed
-};
-
-/**
- * Decorator to add parameter metadata
+ * Parameter decorator for adding metadata
  */
 export function param(description: string) {
     return function(target: any, propertyKey: string | symbol, parameterIndex: number) {
-        const existingParams = Reflect.getMetadata('paramDescriptions', target, propertyKey) || {};
-        existingParams[parameterIndex] = description;
-        Reflect.defineMetadata('paramDescriptions', existingParams, target, propertyKey);
+        const params = Reflect.getMetadata('params', target, propertyKey) || {};
+        params[parameterIndex] = description;
+        Reflect.defineMetadata('params', params, target, propertyKey);
     };
 }
 
 /**
- * Generate OpenAI function schema from TypeScript function
- * 
- * @param func - Function to generate schema for
- * @param options - Schema generation options
- * @returns OpenAI function schema
- */
-export function functionToSchema(
-    func: Function,
-    options: SchemaOptions = {}
-): OpenAIFunctionSchema {
-    const {
-        style = 'google',
-        functionDescription,
-        paramDescriptions
-    } = options;
-
-    // Get function name
-    const funcName = func.name;
-
-    // Extract function description and parameter descriptions from docstring
-    let [funcDesc, paramsDesc] = extractDocstring(func, style);
-    funcDesc = functionDescription || funcDesc || '';
-    
-    // Merge provided parameter descriptions with extracted ones
-    const finalParamDescs = { ...paramsDesc, ...paramDescriptions };
-
-    // Extract parameter information
-    const parameters = extractParameters(func, finalParamDescs);
-
-    return {
-        type: 'function',
-        function: {
-            name: funcName,
-            description: funcDesc,
-            parameters
-        }
-    };
-}
-
-/**
- * Extract parameter information from function
- */
-function extractParameters(
-    func: Function,
-    paramDescriptions: Record<string, string>
-): OpenAIFunctionSchema['function']['parameters'] {
-    const parameters: OpenAIFunctionSchema['function']['parameters'] = {
-        type: 'object',
-        properties: {},
-        required: []
-    };
-
-    // Try to get parameter metadata using reflect-metadata
-    const paramTypes = Reflect.getMetadata('design:paramtypes', func) || [];
-    const paramNames = getParameterNames(func);
-
-    paramNames.forEach((name, index) => {
-        const paramType = paramTypes[index];
-        const paramTypeName = paramType?.name || 'Any';
-        const description = paramDescriptions[name] || null;
-
-        parameters.properties[name] = {
-            type: typeMapping[paramTypeName] || 'any',
-            description
-        };
-
-        // Assume all parameters are required for now
-        parameters.required.push(name);
-    });
-
-    return parameters;
-}
-
-/**
- * Get parameter names from function
- */
-function getParameterNames(func: Function): string[] {
-    // Extract parameter names from function string
-    const funcStr = func.toString();
-    const paramMatch = funcStr.match(/\(([\s\S]*?)\)/);
-    
-    if (!paramMatch) return [];
-    
-    const params = paramMatch[1]
-        .split(',')
-        .map(p => p.trim())
-        .filter(p => p !== '');
-
-    return params.map(p => p.split(':')[0].trim());
-}
-
-/**
- * Example usage with decorators:
- */
-/*
-class Example {
-    @doc('Example function that adds two numbers')
-    add(
-        @param('First number') a: number,
-        @param('Second number') b: number
-    ): number {
-        return a + b;
-    }
-}
-
-const schema = functionToSchema(Example.prototype.add);
-*/
-
-/**
- * Optional decorator for function documentation
+ * Method decorator for adding docstring
  */
 export function doc(description: string) {
-    return function(
-        target: any,
-        propertyKey: string | symbol,
-        descriptor: PropertyDescriptor
-    ) {
-        Reflect.defineMetadata('funcDescription', description, target, propertyKey);
+    return function(target: any, propertyKey: string | symbol, descriptor: PropertyDescriptor) {
+        Reflect.defineMetadata('doc', description, target, propertyKey);
         return descriptor;
     };
 }
 
 /**
- * Extract docstring from function (implementation needed)
+ * Decorator for collecting type information
  */
-function extractDocstring(
+export function TypeInfo(): MethodDecorator {
+    return (target, propertyKey, descriptor) => {
+        // No action needed here, but ensures metadata is emitted
+    };
+}
+
+interface FunctionSchema extends JsonSchema {
+    type: JsonSchemaType;
+    function: {
+        name: string;
+        parameters: {
+            type: 'object';
+            properties: Record<string, {
+                type: JsonSchemaType;
+                description: string | null;
+            }>;
+            required: string[];
+        };
+        returns?: JsonSchema;
+        description: string;
+    };
+}
+
+/**
+ * Generate JSON schema from function
+ */
+export function functionToSchema(
     func: Function,
-    style: 'google' | 'rest'
-): [string | null, Record<string, string>] {
-    // Get function documentation using previously implemented extractDocstring
-    // This should use the same logic as the prior implementation
-    return [null, {}];
+    options: SchemaOptions = {}
+): FunctionSchema {
+    const {
+        includeDoc = true,
+        includeTypes = true,
+        includeReturn = true,
+        functionDescription,
+        paramDescriptions = {},
+        paramTypes = {}
+    } = options;
+
+    // Get function info
+    const funcStr = func.toString();
+    const doc = includeDoc ? extractDocstring(funcStr) : undefined;
+    const params = extractParameters(funcStr);
+
+    // Build parameter schema
+    const paramSchema = {
+        type: 'object' as const,
+        properties: {} as Record<string, { type: JsonSchemaType; description: string | null }>,
+        required: params.map(([name, isRest]) => name)
+    };
+
+    // Get parameter types using reflection
+    const paramTypesFromMetadata: Function[] = Reflect.getMetadata('design:paramtypes', func) || [];
+
+    for (const [index, [name, isRest]] of params.entries()) {
+        let type: JsonSchemaType = 'any';
+
+        // Try to get type from metadata first
+        if (paramTypesFromMetadata[index]) {
+            type = mapTypeToJsonSchema(paramTypesFromMetadata[index].name.toLowerCase());
+        }
+        // Fall back to provided types if available
+        if (paramTypes[name]) {
+            type = paramTypes[name];
+        }
+        // Force array type for rest parameters
+        if (isRest) {
+            type = 'array';
+        }
+
+        paramSchema.properties[name] = {
+            type,
+            description: paramDescriptions[name] || null
+        };
+    }
+
+    // Build full schema
+    const schema: FunctionSchema = {
+        type: 'function' as JsonSchemaType,
+        function: {
+            name: func.name || '',
+            parameters: paramSchema,
+            description: functionDescription || doc || ''
+        }
+    };
+
+    // Add return type if requested
+    if (includeReturn) {
+        const returnType = Reflect.getMetadata('design:returntype', func);
+        if (returnType) {
+            schema.function.returns = {
+                type: mapTypeToJsonSchema(returnType.name.toLowerCase())
+            };
+        }
+    }
+
+    return schema;
+}
+
+/**
+ * Extract parameters from function string
+ */
+function extractParameters(funcStr: string): Array<[string, boolean]> {
+    const fnStr = funcStr.replace(/[/][/].*$/gm, ''); // remove single-line comments
+    const paramMatch = fnStr.slice(fnStr.indexOf('(') + 1, fnStr.indexOf(')')).match(/([^\s,]+)/g);
+    if (!paramMatch) return [];
+
+    return paramMatch.map(param => {
+        const isRest = param.startsWith('...');
+        const name = param.replace(/[=:].+$/, '').trim().replace(/^\.{3}/, '');
+        return [name, isRest];
+    });
+}
+
+/**
+ * Extract docstring from function string
+ */
+function extractDocstring(funcStr: string): string | undefined {
+    const docMatch = funcStr.match(/\/\*\*([\s\S]*?)\*\//);
+    if (!docMatch) return undefined;
+
+    return docMatch[1]
+        .split('\n')
+        .map(line => line.trim().replace(/^\*\s*/, ''))
+        .join('\n')
+        .trim();
+}
+
+/**
+ * Map TypeScript type to JSON Schema type
+ */
+function mapTypeToJsonSchema(typeName: string): JsonSchemaType {
+    switch (typeName.toLowerCase()) {
+        case 'string':
+            return 'string';
+        case 'number':
+        case 'bigint':
+            return 'number';
+        case 'integer':
+        case 'int':
+            return 'integer';
+        case 'boolean':
+        case 'bool':
+            return 'boolean';
+        case 'object':
+            return 'object';
+        case 'array':
+            return 'array';
+        case 'null':
+        case 'undefined':
+        case 'void':
+            return 'null';
+        default:
+            // Handle array types
+            if (typeName.endsWith('[]') || typeName.match(/array\s*<.*>/i)) {
+                return 'array';
+            }
+            return 'any';
+    }
 }

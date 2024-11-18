@@ -1,3 +1,6 @@
+import { ParseError } from './types';
+import { fuzzyParseJson } from './fuzzy_parse_json';
+
 /**
  * Options for JSON extraction
  */
@@ -20,14 +23,21 @@ export function toJson(
     
     // Handle array input
     const inputStr = Array.isArray(input) ? input.join('\n') : input;
+
+    if (!inputStr.trim()) {
+        return [];
+    }
     
-    // Try direct JSON parsing first
+    // Try direct parsing first
     try {
         if (fuzzyParse) {
             return fuzzyParseJson(inputStr);
         }
         return JSON.parse(inputStr);
-    } catch {
+    } catch (error) {
+        if (fuzzyParse) {
+            throw error;
+        }
         // Continue to code block extraction
     }
     
@@ -40,32 +50,30 @@ export function toJson(
     
     if (jsonBlocks.length === 1) {
         try {
-            return fuzzyParse ? 
-                fuzzyParseJson(jsonBlocks[0]) : 
-                JSON.parse(jsonBlocks[0]);
+            if (fuzzyParse) {
+                return fuzzyParseJson(jsonBlocks[0]);
+            }
+            return JSON.parse(jsonBlocks[0]);
         } catch (error) {
             if (fuzzyParse) {
-                throw error; // Fuzzy parse already failed
+                throw error;
             }
-            try {
-                return fuzzyParseJson(jsonBlocks[0]);
-            } catch {
-                return [];
-            }
+            return {};
         }
     }
     
     // Handle multiple blocks
     return jsonBlocks.map(block => {
         try {
-            return fuzzyParse ? 
-                fuzzyParseJson(block) : 
-                JSON.parse(block);
+            if (fuzzyParse) {
+                return fuzzyParseJson(block);
+            }
+            return JSON.parse(block);
         } catch (error) {
             if (fuzzyParse) {
                 throw error;
             }
-            return fuzzyParseJson(block);
+            return {};
         }
     });
 }
@@ -86,45 +94,6 @@ function extractJsonBlocks(content: string): string[] {
     }
     
     return matches;
-}
-
-/**
- * Attempt to parse JSON with fuzzy matching
- */
-function fuzzyParseJson(str: string): Record<string, unknown> {
-    // Clean the string
-    const cleaned = str
-        // Remove comments
-        .replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '')
-        // Replace single quotes with double quotes
-        .replace(/'/g, '"')
-        // Add quotes to unquoted keys
-        .replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3')
-        // Fix trailing commas
-        .replace(/,(\s*[}\]])/g, '$1')
-        // Remove extra whitespace
-        .trim();
-    
-    try {
-        return JSON.parse(cleaned);
-    } catch (error) {
-        // Try additional fixes
-        const furtherCleaned = cleaned
-            // Fix missing quotes around values
-            .replace(/:\s*([^[{"\d-][^,}\]]*)/g, ':"$1"')
-            // Fix undefined/null values
-            .replace(/:\s*(undefined|null)\b/g, ':null')
-            // Fix boolean values
-            .replace(/:\s*(true|false)\b/g, (match, bool) => 
-                `:${bool.toLowerCase()}`
-            );
-        
-        try {
-            return JSON.parse(furtherCleaned);
-        } catch {
-            throw new Error('Failed to parse JSON with fuzzy matching');
-        }
-    }
 }
 
 /**
@@ -159,29 +128,3 @@ export const jsonUtils = {
         );
     }
 };
-
-// Example usage:
-/*
-const markdown = `
-\`\`\`json
-{
-    "name": "John",
-    "age": 30
-}
-\`\`\`
-
-\`\`\`json
-{
-    "name": "Jane",
-    "age": 25
-}
-\`\`\`
-`;
-
-const json = toJson(markdown);
-console.log(json);  // Array of parsed JSON objects
-
-const singleJson = '{"key": "value"}';
-const parsed = toJson(singleJson);
-console.log(parsed);  // Single parsed JSON object
-*/

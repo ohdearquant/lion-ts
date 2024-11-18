@@ -33,11 +33,26 @@ async function serializeAs(
         });
 
         // Process string if needed
-        if (strType || chars) {
-            const str = JSON.stringify(dict);
-            const processedStr = processString(str, stripLower, chars);
-            const processedDict = JSON.parse(processedStr);
-            
+        if (stripLower || chars) {
+            const processDict = (obj: any): any => {
+                if (typeof obj === 'string') {
+                    return processString(obj, stripLower, chars);
+                }
+                if (Array.isArray(obj)) {
+                    return obj.map(processDict);
+                }
+                if (obj && typeof obj === 'object') {
+                    const result: Record<string, any> = {};
+                    for (const [key, value] of Object.entries(obj)) {
+                        const processedKey = stripLower ? key.toLowerCase() : key;
+                        result[processedKey] = processDict(value);
+                    }
+                    return result;
+                }
+                return obj;
+            };
+
+            const processedDict = processDict(dict);
             return format === 'json' 
                 ? JSON.stringify(processedDict, null, indent)
                 : dictToXml(processedDict, rootTag, { pretty: true, indent: ' '.repeat(indent) });
@@ -71,13 +86,17 @@ function toStrType(input: any): string {
         return '';
     }
 
-    if (typeof input === 'object' && Object.keys(input).length === 0) {
+    if (typeof input === 'object' && input !== null && Object.keys(input).length === 0) {
         return '';
     }
 
     // Handle binary data
     if (input instanceof Uint8Array || input instanceof ArrayBuffer) {
-        return new TextDecoder().decode(input);
+        try {
+            return new TextDecoder().decode(input);
+        } catch {
+            return '';
+        }
     }
 
     // Handle strings
@@ -85,22 +104,43 @@ function toStrType(input: any): string {
         return input;
     }
 
-    // Handle objects
-    if (typeof input === 'object' && !Array.isArray(input)) {
+    // Handle primitive types
+    if (typeof input !== 'object' || input === null) {
+        return String(input);
+    }
+
+    // Handle arrays
+    if (Array.isArray(input)) {
         try {
             return JSON.stringify(input);
         } catch {
-            // Fall through to default conversion
+            return input.map(item => toStrType(item)).join(',');
         }
     }
 
-    // Default conversion
+    // Handle custom toString
+    if (typeof input.toString === 'function' && input.toString !== Object.prototype.toString) {
+        try {
+            const result = input.toString();
+            if (result !== '[object Object]') {
+                return result;
+            }
+        } catch {
+            // Fall through to JSON handling
+        }
+    }
+
+    // Handle objects
     try {
-        return String(input);
+        return JSON.stringify(input);
     } catch (error) {
-        throw new ParseError(
-            `Could not convert input of type <${input?.constructor?.name || typeof input}> to string`
-        );
+        if (error instanceof Error) {
+            if (error.message.includes('circular')) {
+                throw new ParseError('Cannot convert circular structure to string');
+            }
+            throw new ParseError(`Failed to convert object to string: ${error.message}`);
+        }
+        throw new ParseError('Failed to convert object to string');
     }
 }
 
@@ -113,26 +153,21 @@ function processString(
     chars: string | null
 ): string {
     // Handle empty values
-    if (
-        !s ||
-        s === 'undefined' ||
-        s === 'null' ||
-        s === '[]' ||
-        s === '{}'
-    ) {
+    if (!s || s === 'undefined' || s === 'null' || s === '[]' || s === '{}') {
         return '';
     }
 
+    let result = s;
     if (stripLower) {
-        s = s.toLowerCase();
-        if (chars !== null) {
-            const regex = new RegExp(`^[${chars}]+|[${chars}]+$`, 'g');
-            s = s.replace(regex, '');
-        } else {
-            s = s.trim();
-        }
+        result = result.toLowerCase();
     }
-    return s;
+    if (chars !== null) {
+        const regex = new RegExp(`^[${chars}]+|[${chars}]+$`, 'g');
+        result = result.replace(regex, '');
+    } else if (stripLower) {
+        result = result.trim();
+    }
+    return result;
 }
 
 /**

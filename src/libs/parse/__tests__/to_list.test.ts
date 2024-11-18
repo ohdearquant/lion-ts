@@ -211,8 +211,13 @@ describe('toList', () => {
     });
 
     test('handles array subclasses', () => {
-        class SubArray extends Array {}
-        const subArray = new SubArray(1, 2, 3);
+        class SubArray extends Array {
+            constructor() {
+                super();
+                this.push(1, 2, 3);
+            }
+        }
+        const subArray = new SubArray();
         expect(toList(subArray)).toEqual([1, 2, 3]);
     });
 

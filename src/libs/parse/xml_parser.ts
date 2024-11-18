@@ -8,7 +8,7 @@ import { XmlParserOptions, ParseError, StringKeyedDict } from './types';
  * This function converts an XML string into a dictionary where:
  * - Element tags become dictionary keys
  * - Text content is assigned directly to the tag key if there are no children
- * - Attributes are stored in a '@attributes' key
+ * - Attributes are stored in a '$' key
  * - Multiple child elements with the same tag are stored as lists
  * 
  * @param xmlString - The XML string to parse
@@ -20,7 +20,7 @@ import { XmlParserOptions, ParseError, StringKeyedDict } from './types';
  * ```typescript
  * const xml = '<root><item>value</item></root>';
  * const result = await xmlToDict(xml);
- * // result = { item: 'value' }
+ * // result = { root: { item: 'value' } }
  * ```
  */
 export async function xmlToDict(
@@ -44,16 +44,26 @@ export async function xmlToDict(
             explicitArray,
             mergeAttrs,
             trim: true,
-            explicitRoot: !removeRoot
+            explicitRoot: !removeRoot,
+            charkey: '_',
+            attrkey: '$',
+            explicitCharkey: true,
+            valueProcessors: [
+                (value: any) => {
+                    if (value === null || value === undefined) return '';
+                    return String(value).trim();
+                }
+            ],
+            attrValueProcessors: [
+                (value: any) => {
+                    if (value === null || value === undefined) return '';
+                    return String(value).trim();
+                }
+            ]
         });
 
         const result = await parser.parseStringPromise(xmlString);
-        
-        if (removeRoot && (rootTag || Object.keys(result)[0])) {
-            const key = rootTag || Object.keys(result)[0];
-            return result[key] || {};
-        }
-        return result;
+        return processContent(result);
     } catch (error) {
         if (suppress) {
             return {};
@@ -62,6 +72,57 @@ export async function xmlToDict(
             `Failed to parse XML: ${error instanceof Error ? error.message : 'Unknown error'}`
         );
     }
+}
+
+/**
+ * Process XML content to clean up the structure
+ */
+function processContent(content: any): any {
+    if (!content) return content;
+
+    // Handle text content
+    if (typeof content === 'string') {
+        return content;
+    }
+
+    // Handle arrays
+    if (Array.isArray(content)) {
+        return content.map(processContent);
+    }
+
+    // Handle objects
+    if (typeof content === 'object') {
+        const result: StringKeyedDict = {};
+        for (const [key, value] of Object.entries(content)) {
+            if (key === '$') {
+                result[key] = value;
+                continue;
+            }
+            if (Array.isArray(value)) {
+                result[key] = value.map(item => {
+                    if (typeof item === 'string') {
+                        return item;
+                    }
+                    if (typeof item === 'object' && '_' in item && Object.keys(item).length === 1) {
+                        return item._;
+                    }
+                    return processContent(item);
+                });
+            } else if (value && typeof value === 'object' && '_' in value && Object.keys(value).length === 1) {
+                result[key] = value._;
+            } else if (value && typeof value === 'object' && '_' in value) {
+                const processed = { ...value };
+                const text = processed._;
+                delete processed._;
+                result[key] = { ...processContent(processed), _: text };
+            } else {
+                result[key] = processContent(value);
+            }
+        }
+        return result;
+    }
+
+    return content;
 }
 
 /**
@@ -89,9 +150,23 @@ export function dictToXml(
     const root = xmlbuilder.create(rootTag);
     
     function convert(obj: StringKeyedDict, parent: xmlbuilder.XMLElement): void {
+        // Handle text content first if present
+        if (obj._ || obj._ === '') {
+            parent.raw(escapeXml(String(obj._)));
+            delete obj._;
+        }
+
+        // Handle attributes
+        if (obj.$ || obj['@attributes']) {
+            const attrs = obj.$ || obj['@attributes'];
+            parent.att(attrs);
+            delete obj.$;
+            delete obj['@attributes'];
+        }
+
         for (const [key, val] of Object.entries(obj)) {
             // Skip internal properties
-            if (key.startsWith('_')) continue;
+            if (key === '$' || key === '_') continue;
 
             // Handle null/undefined
             if (val == null) {
@@ -106,7 +181,7 @@ export function dictToXml(
                     if (item && typeof item === 'object') {
                         convert(item, element);
                     } else {
-                        element.txt(String(item));
+                        element.raw(escapeXml(String(item)));
                     }
                 });
                 continue;
@@ -115,22 +190,29 @@ export function dictToXml(
             // Handle objects
             if (typeof val === 'object') {
                 const element = parent.ele(key);
-                // Handle attributes
-                if (val['@attributes']) {
-                    element.att(val['@attributes']);
-                    delete val['@attributes'];
-                }
                 convert(val, element);
                 continue;
             }
 
             // Handle primitive values
-            parent.ele(key).txt(String(val));
+            parent.ele(key).raw(escapeXml(String(val)));
         }
     }
 
     convert(data, root);
     return root.end({ pretty, indent });
+}
+
+/**
+ * Escape XML special characters
+ */
+function escapeXml(str: string): string {
+    return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
 }
 
 /**
@@ -164,19 +246,41 @@ export function xmlToDictSync(
             explicitArray,
             mergeAttrs,
             trim: true,
-            explicitRoot: !removeRoot
+            explicitRoot: true, // Always keep root initially
+            charkey: '_',
+            attrkey: '$',
+            explicitCharkey: true,
+            valueProcessors: [
+                (value: any) => {
+                    if (value === null || value === undefined) return '';
+                    return String(value).trim();
+                }
+            ],
+            attrValueProcessors: [
+                (value: any) => {
+                    if (value === null || value === undefined) return '';
+                    return String(value).trim();
+                }
+            ]
         });
 
         let result: StringKeyedDict = {};
         parser.parseString(xmlString, (err, parsed) => {
             if (err) throw err;
-            result = parsed;
+            result = processContent(parsed);
         });
-        
-        if (removeRoot && (rootTag || Object.keys(result)[0])) {
-            const key = rootTag || Object.keys(result)[0];
-            return result[key] || {};
+
+        // Handle root tag removal
+        if (removeRoot && result && typeof result === 'object') {
+            const rootKeys = Object.keys(result);
+            if (rootKeys.length === 1) {
+                const rootContent = result[rootKeys[0]];
+                if (rootContent && typeof rootContent === 'object') {
+                    return rootContent;
+                }
+            }
         }
+
         return result;
     } catch (error) {
         if (suppress) {

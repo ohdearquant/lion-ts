@@ -1,5 +1,5 @@
 import { fuzzyParseJson } from './fuzzy_parse_json';
-import { xmlToDict, xmlToDictSync } from './xml_parser';
+import { xmlToDictSync } from './xml_parser';
 import { ToDictOptions, ParseError, StringKeyedDict } from './types';
 
 /**
@@ -13,7 +13,7 @@ import { ToDictOptions, ParseError, StringKeyedDict } from './types';
  * ```typescript
  * toDict('{"a": 1}') // { a: 1 }
  * toDict(new Map([['a', 1]])) // { a: 1 }
- * toDict('<root><a>1</a></root>', { strType: 'xml' }) // { a: '1' }
+ * toDict('<root><a>1</a></root>', { strType: 'xml' }) // { root: { a: '1' } }
  * ```
  */
 export function toDict(
@@ -23,7 +23,7 @@ export function toDict(
     const {
         useDictDump = true,
         fuzzyParse = false,
-        strType = 'json',
+        strType = null,
         parser = undefined,
         recursive = false,
         maxRecursiveDepth = 5,
@@ -72,7 +72,7 @@ function toDictCore(
     const {
         useDictDump = true,
         fuzzyParse = false,
-        strType = 'json',
+        strType = null,
         parser = undefined,
         excludeTypes = [],
         suppress = false
@@ -101,7 +101,46 @@ function toDictCore(
 
         // Handle string conversion
         if (typeof input === 'string') {
-            return stringToDict(input, { strType, parser, fuzzyParse, suppress });
+            // Handle empty string
+            if (!input.trim()) {
+                return {};
+            }
+
+            // Use custom parser if provided
+            if (parser) {
+                return parser(input);
+            }
+
+            // Validate string type if specified
+            if (strType && !['json', 'xml'].includes(strType)) {
+                throw new ParseError('Unsupported string type, must be "json" or "xml"');
+            }
+
+            // Auto-detect string type if not specified
+            let detectedType = strType;
+            if (!detectedType) {
+                const trimmed = input.trim();
+                if (trimmed.startsWith('<') && trimmed.endsWith('>')) {
+                    detectedType = 'xml';
+                } else if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+                    detectedType = 'json';
+                }
+            }
+
+            if (detectedType === 'xml') {
+                return xmlToDictSync(input, { removeRoot: false });
+            }
+
+            if (detectedType === 'json' || !detectedType) {
+                try {
+                    return fuzzyParse ? fuzzyParseJson(input) : JSON.parse(input);
+                } catch (e) {
+                    if (suppress) return {};
+                    throw e;
+                }
+            }
+
+            return { [input]: input };
         }
 
         // Handle Maps
@@ -203,53 +242,6 @@ function recursiveToDict(
     }
 
     return recursiveHelper(input, 0);
-}
-
-/**
- * Convert string to dictionary
- */
-function stringToDict(
-    input: string,
-    options: {
-        strType?: 'json' | 'xml' | null;
-        parser?: (str: string) => StringKeyedDict;
-        fuzzyParse?: boolean;
-        suppress?: boolean;
-    }
-): StringKeyedDict {
-    const {
-        strType = 'json',
-        parser = undefined,
-        fuzzyParse = false,
-        suppress = false
-    } = options;
-
-    if (!input.trim()) {
-        return {};
-    }
-
-    try {
-        if (strType === 'json') {
-            if (parser) {
-                return parser(input);
-            }
-            return fuzzyParse ? fuzzyParseJson(input) : JSON.parse(input);
-        }
-
-        if (strType === 'xml') {
-            if (parser) {
-                return parser(input);
-            }
-            return xmlToDictSync(input, { suppress });
-        }
-
-        throw new ParseError('Unsupported string type, must be "json" or "xml"');
-    } catch (error) {
-        if (suppress) {
-            return {};
-        }
-        throw error;
-    }
 }
 
 /**

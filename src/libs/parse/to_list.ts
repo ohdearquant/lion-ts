@@ -1,22 +1,79 @@
-import { ToListOptions, ParseError } from './types';
+import { ValueError } from '../errors';
+import { ParseError, ToListOptions } from './types';
 
 /**
- * Convert various input types to a list
+ * List utility functions
+ */
+export const listUtils = {
+    createArray,
+    range,
+    createArraySubclass,
+    flatten(arr: any[], depth: number = Infinity): any[] {
+        return depth < 1 ? arr.slice() :
+            arr.reduce((flat: any[], item: any) => {
+                if (Array.isArray(item)) {
+                    return flat.concat(this.flatten(item, depth - 1));
+                }
+                if (item instanceof Set || item instanceof Map) {
+                    return flat.concat(this.flatten(Array.from(item.values()), depth - 1));
+                }
+                if (item && typeof item === 'object' && !Buffer.isBuffer(item)) {
+                    return flat.concat(Object.values(item));
+                }
+                return flat.concat(item);
+            }, []);
+    },
+    dropNulls<T>(arr: T[]): T[] {
+        return arr.filter(x => x != null);
+    },
+    unique<T>(arr: T[]): T[] {
+        return Array.from(new Set(arr));
+    },
+    isListLike(value: any): boolean {
+        try {
+            return Array.isArray(value) ||
+                   value instanceof Set ||
+                   value instanceof Map ||
+                   (value != null && 
+                    typeof value === 'object' && 
+                    Symbol.iterator in value && 
+                    typeof value[Symbol.iterator] === 'function');
+        } catch {
+            return false;
+        }
+    },
+    hasValidIterator(value: any): boolean {
+        try {
+            return value != null && 
+                   typeof value === 'object' && 
+                   Symbol.iterator in value && 
+                   typeof value[Symbol.iterator] === 'function' &&
+                   typeof value[Symbol.iterator]() === 'object';
+        } catch {
+            return false;
+        }
+    }
+};
+
+/**
+ * Convert any input to an array.
  * 
- * @param input - Input to convert to list
+ * @param input - Value to convert to array
  * @param options - Conversion options
- * @returns Converted list
+ * @returns Array representation of input
+ * @throws ValueError if options are invalid
+ * @throws ParseError if conversion fails and suppress is false
  * 
  * @example
  * ```typescript
  * toList('abc', { useValues: true }) // ['a', 'b', 'c']
+ * toList({ a: 1, b: 2 }, { useValues: true }) // [1, 2]
  * toList([1, [2, 3]], { flatten: true }) // [1, 2, 3]
- * toList([1, null, 2], { dropna: true }) // [1, 2]
  * ```
  */
 export function toList<T = any>(
     input: any,
-    options: ToListOptions = {}
+    options: Partial<ToListOptions> = {}
 ): T[] {
     const {
         flatten = false,
@@ -27,242 +84,160 @@ export function toList<T = any>(
     } = options;
 
     try {
+        // Validate options
         if (unique && !flatten) {
-            throw new ParseError('unique=true requires flatten=true');
+            throw new ValueError('unique=true requires flatten=true');
         }
 
-        // Initial conversion
-        let result = toListType<T>(input, useValues, suppress);
-
-        // Process list if needed
-        if (flatten || dropna) {
-            result = processList<T>(result, {
-                flatten,
-                dropna,
-                suppress
-            });
-        }
-
-        // Make unique if requested
-        if (unique) {
-            return Array.from(new Set(result));
-        }
-
-        return result;
-    } catch (error) {
-        if (suppress) {
-            return [];
-        }
-        throw error;
-    }
-}
-
-/**
- * Convert input to list type based on its type
- */
-function toListType<T>(
-    input: any,
-    useValues: boolean,
-    suppress: boolean
-): T[] {
-    try {
         // Handle null/undefined
-        if (input == null) {
+        if (input === null || input === undefined) {
             return [];
         }
 
-        // Handle arrays
+        // Convert input to array
+        let result: any[];
+
         if (Array.isArray(input)) {
-            return input;
+            result = [...input];
+        } else if (typeof input === 'string') {
+            result = useValues ? Array.from(input) : [input];
+        } else if (input instanceof Buffer) {
+            result = useValues ? Array.from(input.toString()) : [input];
+        } else if (typeof input === 'object') {
+            // Handle invalid iterators
+            if (Symbol.iterator in input && !listUtils.hasValidIterator(input)) {
+                if (suppress) {
+                    return [];
+                }
+                throw new ParseError('Invalid iterator');
+            }
+
+            if (input instanceof Set) {
+                result = Array.from(input);
+            } else if (input instanceof Map) {
+                result = useValues ? Array.from(input.values()) : Array.from(input.entries());
+            } else if (listUtils.isListLike(input)) {
+                try {
+                    result = Array.from(input);
+                } catch {
+                    if (suppress) {
+                        return [];
+                    }
+                    throw new ParseError('Failed to convert input to array');
+                }
+            } else if (useValues) {
+                try {
+                    result = Object.values(input);
+                } catch {
+                    if (suppress) {
+                        return [];
+                    }
+                    throw new ParseError('Failed to get object values');
+                }
+            } else {
+                result = [input];
+            }
+        } else {
+            result = [input];
         }
 
-        // Handle strings
-        if (typeof input === 'string') {
-            return (useValues ? Array.from(input) : [input]) as T[];
-        }
-
-        // Handle Buffers
-        if (input instanceof Buffer) {
-            return (useValues ? Array.from(input.toString()) : [input]) as T[];
-        }
-
-        // Handle Maps
-        if (input instanceof Map) {
-            return (useValues ? Array.from(input.values()) : [input]) as T[];
-        }
-
-        // Handle Sets
-        if (input instanceof Set) {
-            return Array.from(input) as T[];
-        }
-
-        // Handle objects with values method
-        if (useValues && typeof input?.values === 'function') {
+        // Apply transformations
+        if (flatten) {
             try {
-                return Array.from(input.values()) as T[];
+                result = listUtils.flatten(result);
             } catch {
-                // Fall through to default handling
+                if (suppress) {
+                    return [];
+                }
+                throw new ParseError('Failed to flatten array');
             }
         }
 
-        // Handle plain objects
-        if (isPlainObject(input)) {
-            return (useValues ? Object.values(input) : [input]) as T[];
-        }
-
-        // Handle iterables
-        if (Symbol.iterator in Object(input)) {
-            return Array.from(input) as T[];
-        }
-
-        // Default to single item array
-        return [input] as T[];
-    } catch (error) {
-        if (suppress) {
-            return [];
-        }
-        throw error;
-    }
-}
-
-/**
- * Process list with flattening and null removal
- */
-function processList<T>(
-    list: T[],
-    options: {
-        flatten: boolean;
-        dropna: boolean;
-        suppress?: boolean;
-    }
-): T[] {
-    const { flatten, dropna, suppress = false } = options;
-    const result: T[] = [];
-
-    try {
-        for (const item of list) {
-            if (isNestedStructure(item)) {
-                if (flatten) {
-                    result.push(
-                        ...processList(
-                            Array.isArray(item) ? item : Array.from(item as any),
-                            options
-                        )
-                    );
-                } else {
-                    result.push(
-                        processList(
-                            Array.isArray(item) ? item : Array.from(item as any),
-                            options
-                        ) as any
-                    );
+        if (dropna) {
+            try {
+                result = result.map(item => 
+                    Array.isArray(item) ? listUtils.dropNulls(item) : item
+                );
+                result = listUtils.dropNulls(result);
+            } catch {
+                if (suppress) {
+                    return [];
                 }
-            } else if (!dropna || item != null) {
-                result.push(item);
+                throw new ParseError('Failed to drop null values');
+            }
+        }
+
+        if (unique) {
+            try {
+                result = listUtils.unique(result);
+            } catch {
+                if (suppress) {
+                    return [];
+                }
+                throw new ParseError('Failed to remove duplicates');
             }
         }
 
         return result;
     } catch (error) {
         if (suppress) {
-            return list;
+            return [];
         }
-        throw error;
+        throw error instanceof ParseError ? error : new ParseError(String(error));
     }
 }
 
 /**
- * Check if value is a plain object
+ * Create a new array with the specified length and initial value.
  */
-function isPlainObject(value: any): boolean {
-    if (value === null || typeof value !== 'object') {
-        return false;
-    }
-    const proto = Object.getPrototypeOf(value);
-    return proto === Object.prototype || proto === null;
+export function createArray<T>(length: number, initialValue: T): T[] {
+    return Array(length).fill(initialValue);
 }
 
 /**
- * Check if value is a nested structure that should be processed
+ * Create a range array from start to end (exclusive) with optional step.
  */
-function isNestedStructure(value: any): boolean {
-    return (
-        value != null &&
-        typeof value === 'object' &&
-        !(value instanceof Date) &&
-        !(value instanceof RegExp) &&
-        !(typeof value === 'string') &&
-        !(value instanceof Buffer) &&
-        !(isPlainObject(value))
-    );
+export function range(start: number, end: number, step: number = 1): number[] {
+    const length = Math.max(Math.ceil((end - start) / step), 0);
+    return Array(length).fill(0).map((_, i) => start + (i * step));
 }
 
 /**
- * Utility functions for working with lists
+ * Create a new array subclass instance.
  */
-export const listUtils = {
-    /**
-     * Flatten a list to specified depth
-     * 
-     * @example
-     * ```typescript
-     * flatten([1, [2, [3, 4]]], 1) // [1, 2, [3, 4]]
-     * flatten([1, [2, [3, 4]]]) // [1, 2, 3, 4]
-     * ```
-     */
-    flatten<T>(list: T[], depth: number = Infinity): T[] {
-        const flattenRecursive = (arr: any[], currentDepth: number): any[] => {
-            return arr.reduce((acc, val) => {
-                if (Array.isArray(val) && currentDepth > 0) {
-                    acc.push(...flattenRecursive(val, currentDepth - 1));
-                } else {
-                    acc.push(val);
-                }
-                return acc;
-            }, []);
-        };
+export function createArraySubclass<T extends Array<any>>(
+    arrayClass: new () => T,
+    items: any[] = []
+): T {
+    const instance = new arrayClass();
+    instance.push(...items);
+    return instance;
+}
 
-        return flattenRecursive(list, depth);
-    },
+/**
+ * Flatten an array to the specified depth.
+ */
+export function flatten(arr: any[], depth: number = Infinity): any[] {
+    return listUtils.flatten(arr, depth);
+}
 
-    /**
-     * Remove null and undefined values
-     * 
-     * @example
-     * ```typescript
-     * dropNulls([1, null, 2, undefined]) // [1, 2]
-     * ```
-     */
-    dropNulls<T>(list: T[]): NonNullable<T>[] {
-        return list.filter((item): item is NonNullable<T> => item != null);
-    },
+/**
+ * Remove null and undefined values from an array.
+ */
+export function dropNulls<T>(arr: T[]): T[] {
+    return listUtils.dropNulls(arr);
+}
 
-    /**
-     * Get unique values from list
-     * 
-     * @example
-     * ```typescript
-     * unique([1, 2, 2, 3, 3]) // [1, 2, 3]
-     * ```
-     */
-    unique<T>(list: T[]): T[] {
-        return Array.from(new Set(list));
-    },
+/**
+ * Remove duplicate values from an array.
+ */
+export function unique<T>(arr: T[]): T[] {
+    return listUtils.unique(arr);
+}
 
-    /**
-     * Check if value is list-like
-     * 
-     * @example
-     * ```typescript
-     * isListLike([1, 2, 3]) // true
-     * isListLike(new Set([1, 2])) // true
-     * isListLike({ length: 1 }) // false
-     * ```
-     */
-    isListLike(value: any): boolean {
-        return Array.isArray(value) ||
-               value instanceof Set ||
-               (typeof value?.[Symbol.iterator] === 'function' &&
-                typeof value?.length === 'number');
-    }
-};
+/**
+ * Check if a value is array-like.
+ */
+export function isListLike(value: any): boolean {
+    return listUtils.isListLike(value);
+}

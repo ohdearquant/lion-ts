@@ -1,14 +1,14 @@
 import { Complex, NumberParseOptions, Numeric, NumberMatch, ParseError, ValidNumericType } from './types';
 
-// Number patterns
+// Number patterns - ordered from most specific to most general
 const PATTERNS = {
-    complex_sci: /[+-]?\d*\.?\d+[eE][+-]?\d+[+-]\d*\.?\d*[jJ]/,
-    complex: /[+-]?\d*\.?\d+[+-]\d*\.?\d*[jJ]/,
-    pure_imaginary: /[+-]?\d*\.?\d*[jJ]/,
+    complex_sci: /[+-]?(?:\d*\.?\d+(?:[eE][+-]?\d+)?[+-]\d*\.?\d+(?:[eE][+-]?\d+)?|[+-]?\d*\.?\d+(?:[eE][+-]?\d+)?)[jJ]/,
+    complex: /[+-]?(?:\d*\.?\d+[+-]\d*\.?\d+|[+-]?\d*\.?\d+)[jJ]/,
+    pure_imaginary: /[+-]?(?:\d*\.?\d*)?[jJ]/,
     scientific: /[+-]?\d*\.?\d+[eE][+-]?\d+/,
-    decimal: /[+-]?\d*\.?\d+/,
     percentage: /[+-]?\d*\.?\d+%/,
     fraction: /[+-]?\d+\/\d+/,
+    decimal: /[+-]?\d*\.?\d+/,
     special: /[+-]?(?:infinity|inf|nan)/i
 };
 
@@ -29,7 +29,7 @@ export function toNum(
 
     // Validate input type
     if (Array.isArray(input)) {
-        throw new ParseError('Input cannot be a sequence');
+        throw new TypeError('Input cannot be a sequence');
     }
 
     // Handle boolean input
@@ -46,7 +46,7 @@ export function toNum(
     }
 
     // Extract numbers from string
-    const inputStr = String(input);
+    const inputStr = String(input).trim();
     const matches = extractNumbers(inputStr);
 
     if (!matches.length) {
@@ -70,22 +70,39 @@ export function toNum(
  * Extract numbers using patterns
  */
 function extractNumbers(text: string): NumberMatch[] {
-    const combined = Object.values(PATTERNS).join('|');
-    const regex = new RegExp(combined, 'gi');
-    const matches: NumberMatch[] = [];
-    let match;
+    type MatchWithPosition = { type: string; value: string; start: number; end: number };
+    const matchesWithPos: MatchWithPosition[] = [];
+    
+    // Try each pattern in order
+    for (const [name, pattern] of Object.entries(PATTERNS)) {
+        const regex = new RegExp(pattern.source, 'gi');
+        let match;
 
-    while ((match = regex.exec(text)) !== null) {
-        const value = match[0];
-        for (const [name, pattern] of Object.entries(PATTERNS)) {
-            if (new RegExp(`^${pattern.source}$`, 'i').test(value)) {
-                matches.push([name, value]);
-                break;
+        while ((match = regex.exec(text)) !== null) {
+            const value = match[0];
+            const start = match.index;
+            const end = start + value.length;
+
+            // Check if this match overlaps with any existing matches
+            const overlaps = matchesWithPos.some(existing => 
+                (start < existing.end && end > existing.start)
+            );
+
+            if (!overlaps) {
+                matchesWithPos.push({
+                    type: name,
+                    value: value,
+                    start: start,
+                    end: end
+                });
             }
         }
     }
 
-    return matches;
+    // Sort matches by position and convert to NumberMatch format
+    return matchesWithPos
+        .sort((a, b) => a.start - b.start)
+        .map(m => [m.type, m.value]);
 }
 
 /**
@@ -122,11 +139,12 @@ function parseNumber([type, value]: NumberMatch): number | Complex {
             return parsePercentage(value);
         case 'fraction':
             return parseFraction(value);
-        case 'complex':
         case 'complex_sci':
+        case 'complex':
         case 'pure_imaginary':
             return parseComplex(value);
         case 'scientific':
+            return parseFloat(value);
         case 'decimal':
             return parseFloat(value);
         default:
@@ -166,23 +184,25 @@ function parseFraction(value: string): number {
 
 function parseComplex(value: string): Complex {
     // Handle pure imaginary
-    if (value.endsWith('j') || value.endsWith('J')) {
-        if (/^[+-]?j$/i.test(value)) {
+    if (/^[+-]?(?:\d*\.?\d*)?[jJ]$/.test(value)) {
+        if (/^[+-]?[jJ]$/.test(value)) {
             return new Complex(0, value.startsWith('-') ? -1 : 1);
         }
         const imag = parseFloat(value.slice(0, -1) || '1');
         return new Complex(0, imag);
     }
 
-    // Parse complex number
-    const match = value.match(/([+-]?\d*\.?\d+)([+-]\d*\.?\d*)[jJ]/);
-    if (!match) {
+    // Parse complex number with scientific notation or regular format
+    const parts = value.slice(0, -1).match(/([+-]?\d*\.?\d+(?:[eE][+-]?\d+)?)([+-]\d*\.?\d+(?:[eE][+-]?\d+)?)?/);
+    if (!parts) {
         throw new ParseError(`Invalid complex number: ${value}`);
     }
-    return new Complex(
-        parseFloat(match[1]),
-        parseFloat(match[2] || '1')
-    );
+
+    const real = parseFloat(parts[1]);
+    const imagStr = parts[2] || '+1';
+    const imag = parseFloat(imagStr);
+
+    return new Complex(real, imag);
 }
 
 /**
@@ -197,10 +217,8 @@ function validateType(
             if (value instanceof Complex) {
                 throw new ParseError('Cannot convert complex to int');
             }
-            if (!Number.isInteger(value)) {
-                throw new ParseError(`Cannot convert ${value} to int`);
-            }
-            return value;
+            const rounded = Math.round(value);
+            return rounded;
         case 'float':
             return value instanceof Complex ? value : Number(value);
         case 'complex':

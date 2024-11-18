@@ -5,6 +5,7 @@ type JsonSchema = {
     type?: string;
     properties?: Record<string, JsonSchema>;
     items?: JsonSchema;
+    required?: string[];
     [key: string]: any;
 };
 
@@ -46,35 +47,35 @@ function schemaToRegex(schema: JsonSchema): string {
  */
 function generateObjectPattern(schema: JsonSchema): string {
     const properties = schema.properties || {};
+    const required = new Set(schema.required || []);
     
     if (Object.keys(properties).length === 0) {
         return '\\{\\s*\\}';
     }
 
-    const propPatterns = Object.entries(properties).map(
-        ([prop, propSchema]) =>
-            `"${escapeRegex(prop)}"\\s*:\\s*${schemaToRegex(propSchema)}`
-    );
+    const propPatterns = Object.entries(properties).map(([prop, propSchema]) => {
+        const propPattern = `"${escapeRegex(prop)}"\\s*:\\s*${schemaToRegex(propSchema)}`;
+        return required.has(prop) ? propPattern : `(?:${propPattern})?`;
+    });
 
-    const propPattern = propPatterns.join('|');
+    const propPattern = propPatterns.join('\\s*,\\s*');
     
-    return '\\{\\s*(' +
-           propPattern +
-           ')(\\s*,\\s*(' +
-           propPattern +
-           '))*\\s*\\}';
+    return '\\{\\s*' + propPattern + '\\s*\\}';
 }
 
 /**
  * Generate pattern for array type
  */
 function generateArrayPattern(schema: JsonSchema): string {
-    const items = schema.items || {};
-    const itemPattern = schemaToRegex(items);
+    if (!schema.items) {
+        return '\\[\\s*\\]';
+    }
+
+    const itemPattern = schemaToRegex(schema.items);
     
-    return '\\[\\s*(' +
+    return '\\[\\s*(?:' +
            itemPattern +
-           '(\\s*,\\s*' +
+           '(?:\\s*,\\s*' +
            itemPattern +
            ')*)?\\s*\\]';
 }
@@ -91,11 +92,11 @@ function generateIntegerPattern(): string {
 }
 
 function generateNumberPattern(): string {
-    return '-?\\d+(\\.\\d+)?';
+    return '-?\\d+(?:\\.\\d+)?';
 }
 
 function generateBooleanPattern(): string {
-    return '(true|false)';
+    return '(?:true|false)';
 }
 
 function generateNullPattern(): string {
@@ -152,28 +153,8 @@ export const regexUtils = {
      */
     simplifyPattern(pattern: string): string {
         return pattern
-            .replace(/\s+/g, '\\s*')
-            .replace(/\\\s\*/g, '\\s*');
+            .replace(/\\s\+/g, '\\s*')  // Replace \s+ with \s*
+            .replace(/\s+/g, ' ')      // Normalize actual whitespace
+            .trim();
     }
 };
-
-// Example usage:
-/*
-const schema = {
-    type: 'object',
-    properties: {
-        name: { type: 'string' },
-        age: { type: 'integer' },
-        scores: {
-            type: 'array',
-            items: { type: 'number' }
-        }
-    }
-};
-
-const pattern = jsonSchemaToRegex(schema);
-console.log(pattern);
-
-const testJson = '{"name":"John","age":30,"scores":[95.5,87.3]}';
-console.log(regexUtils.testPattern(pattern, testJson));
-*/

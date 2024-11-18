@@ -1,304 +1,203 @@
-import { 
-  UNDEFINED, 
-  PATTERNS,
-  TRUE_VALUES, 
-  FALSE_VALUES,
-} from '../../constants';
-
-import { ValidNumericType } from './types';
-
-
-import { ValueError, TypeError } from '../errors';
-
-import type {
-  ReadableJsonOptions,
-  ToDictOptions,
-  ToListOptions,
-  StringKeyedDict
-} from './types';
+import { ParseError } from './types';
 
 /**
- * Convert input to a human-readable JSON string
+ * Extract numbers from text in various formats
+ * 
+ * @param text - Text to extract numbers from
+ * @returns Array of tuples containing number type and value
+ * 
+ * @example
+ * ```typescript
+ * extractNumbers('50% of 100.5');
+ * // [['percentage', '50%'], ['decimal', '100.5']]
+ * ```
  */
-export function asReadableJson(input: any, options: Partial<ReadableJsonOptions> = {}): string {
-  const {
-    indent = 4,
-    ensureAscii = false,
-    useDictDump = true,
-    fuzzyParse = true,
-    recursive = true,
-    recursivePythonOnly = true,
-    maxRecursiveDepth = 5,
-  } = options;
+export function extractNumbers(text: string): Array<[string, string]> {
+    const patterns = {
+        percentage: /\b\d+(\.\d+)?%/g,
+        decimal: /\b\d+\.\d+\b/g,
+        fraction: /\b\d+\/\d+\b/g,
+        integer: /\b\d+\b/g
+    };
 
-  // Handle empty input
-  if (!input) {
-    if (Array.isArray(input)) return '';
-    return '{}';
-  }
+    const results: Array<[string, string]> = [];
+    const matched = new Set<string>();
 
-  try {
-    if (Array.isArray(input)) {
-      // For lists, convert and format each item separately
-      const items = input.map(item => {
-        const dict = toDict(item, {
-          useDictDump,
-          fuzzyParse,
-          recursive,
-          recursivePythonOnly,
-          maxRecursiveDepth,
-        });
-        return JSON.stringify(dict, null, indent);
-      });
-      return items.join('\n\n');
+    // Extract percentages first
+    let match;
+    while ((match = patterns.percentage.exec(text)) !== null) {
+        results.push(['percentage', match[0]]);
+        matched.add(match[0]);
     }
 
-    // Handle single items
-    const dict = toDict(input, {
-      useDictDump,
-      fuzzyParse,
-      recursive,
-      recursivePythonOnly,
-      maxRecursiveDepth,
-    });
-
-    return JSON.stringify(dict, null, indent);
-  } catch (e) {
-    throw new Error(`Failed to convert input to readable JSON: ${e}`);
-  }
-}
-
-/**
- * Convert input to readable string with optional markdown formatting
- */
-export function asReadable(input: any, md = false, options: Partial<ReadableJsonOptions> = {}): string {
-  try {
-    const result = asReadableJson(input, options);
-    return md ? `\`\`\`json\n${result}\n\`\`\`` : result;
-  } catch {
-    return String(input);
-  }
-}
-
-/**
- * Extract code blocks from markdown text
- */
-export function extractCodeBlock(
-  strToParse: string,
-  returnAsList = false,
-  languages: string[] | null = null,
-  categorize = false
-): string | string[] | Record<string, string[]> {
-  const codeBlocks: string[] = [];
-  const codeDict: Record<string, string[]> = {};
-
-  const pattern = /^(?:```|~~~)[ \t]*([\w+-]*)[ \t]*\n(.*?)(?<=\n)^(?:```|~~~)[ \t]*$/gms;
-
-  for (const match of strToParse.matchAll(pattern)) {
-    const lang = match[1] || 'plain';
-    const code = match[2];
-
-    if (!languages || languages.includes(lang)) {
-      if (categorize) {
-        if (!codeDict[lang]) {
-          codeDict[lang] = [];
+    // Extract decimals
+    while ((match = patterns.decimal.exec(text)) !== null) {
+        if (!matched.has(match[0])) {
+            results.push(['decimal', match[0]]);
+            matched.add(match[0]);
         }
-        codeDict[lang].push(code);
-      } else {
-        codeBlocks.push(code);
-      }
     }
-  }
 
-  if (categorize) {
-    return codeDict;
-  }
-  if (returnAsList) {
-    return codeBlocks;
-  }
-  return codeBlocks.join('\n\n');
-}
-
-/**
- * Extract numbers from text using regex patterns
- */
-export function extractNumbers(text: string): [string, string][] {
-  const combinedPattern = Object.values(PATTERNS).join('|');
-  const matches = text.matchAll(new RegExp(combinedPattern, 'gi'));
-  const numbers: [string, string][] = [];
-
-  for (const match of matches) {
-    const value = match[0];
-    // Check which pattern matched
-    for (const [patternName, pattern] of Object.entries(PATTERNS)) {
-      if (new RegExp(String(pattern), 'i').test(value)) {
-        numbers.push([patternName, value]);
-        break;
-      }
+    // Extract fractions
+    while ((match = patterns.fraction.exec(text)) !== null) {
+        if (!matched.has(match[0])) {
+            results.push(['fraction', match[0]]);
+            matched.add(match[0]);
+        }
     }
-  }
 
-  return numbers;
-}
-
-/**
- * Validate numeric type specification
- */
-export function validateNumType(numType: ValidNumericType): NumberConstructor {
-  if (typeof numType === 'string') {
-    switch (numType) {
-      case 'int':
-      case 'float':
-      case 'complex':
-        return Number;
-      default:
-        throw new ValueError(`Invalid number type: ${numType}`);
+    // Extract integers
+    while ((match = patterns.integer.exec(text)) !== null) {
+        if (!matched.has(match[0])) {
+            results.push(['integer', match[0]]);
+            matched.add(match[0]);
+        }
     }
-  }
 
-  if (numType !== Number) {
-    throw new ValueError(`Invalid number type: ${numType}`);
-  }
-
-  return numType;
+    return results;
 }
 
 /**
- * Validate and convert boolean values
+ * Split text into lines and extract code blocks
+ * 
+ * @param text - Text to split into lines
+ * @returns Array of lines with code blocks preserved
+ * 
+ * @example
+ * ```typescript
+ * splitLines('let x = 1;\nprint(x)');
+ * // ['let x = 1;', 'print(x)']
+ * ```
  */
-export function validateBoolean(x: any): boolean {
-  if (x === null) {
-    throw new TypeError('Cannot convert null to boolean');
-  }
-
-  if (typeof x === 'boolean') {
-    return x;
-  }
-
-  // Handle numeric types
-  if (typeof x === 'number') {
-    return Boolean(x);
-  }
-
-  // Convert to string if not already
-  const strValue = String(x).trim().toLowerCase();
-
-  if (!strValue) {
-    throw new ValueError('Cannot convert empty string to boolean');
-  }
-
-  if (TRUE_VALUES.has(strValue)) {
-    return true;
-  }
-
-  if (FALSE_VALUES.has(strValue)) {
-    return false;
-  }
-
-  // Try numeric conversion as last resort
-  const num = Number(strValue);
-  if (!isNaN(num)) {
-    return Boolean(num);
-  }
-
-  throw new ValueError(
-    `Cannot convert '${x}' to boolean. Valid true values are: ${[...TRUE_VALUES]}, ` +
-    `valid false values are: ${[...FALSE_VALUES]}`
-  );
+export function splitLines(text: string): string[] {
+    if (!text) return [];
+    return text.split(/\r?\n/);
 }
 
 /**
- * Convert special float values (inf, -inf, nan)
+ * Join lines with appropriate line endings
+ * 
+ * @param lines - Lines to join
+ * @param separator - Line separator to use
+ * @returns Joined text
+ * 
+ * @example
+ * ```typescript
+ * joinLines(['let x = 1;', 'print(x)']);
+ * // 'let x = 1;\nprint(x)'
+ * ```
  */
-export function convertSpecial(value: string): number {
-  const lowerValue = value.toLowerCase();
-  if (lowerValue.includes('infinity') || lowerValue.includes('inf')) {
-    return lowerValue.startsWith('-') ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY;
-  }
-  return Number.NaN;
+export function joinLines(lines: string[], separator: string = '\n'): string {
+    return lines.join(separator);
 }
 
 /**
- * Convert percentage string to number
+ * Remove common indentation from text
+ * 
+ * @param text - Text to dedent
+ * @returns Dedented text
+ * 
+ * @example
+ * ```typescript
+ * dedent('    let x = 1;\n    print(x)');
+ * // 'let x = 1;\nprint(x)'
+ * ```
  */
-export function convertPercentage(value: string): number {
-  try {
-    return Number(value.replace('%', '')) / 100;
-  } catch (e) {
-    throw new ValueError(`Invalid percentage value: ${value}`);
-  }
+export function dedent(text: string): string {
+    if (!text) return '';
+
+    // Split into lines
+    const lines = text.split(/\r?\n/);
+    if (lines.length === 0) return '';
+
+    // Find minimum indentation
+    let minIndent = Infinity;
+    for (const line of lines) {
+        if (!line.trim()) continue;
+        const indent = line.match(/^\s*/)?.[0].length ?? 0;
+        minIndent = Math.min(minIndent, indent);
+    }
+
+    // Remove common indentation
+    if (minIndent === Infinity) return text;
+    return lines
+        .map(line => line.slice(minIndent))
+        .join('\n');
 }
 
 /**
- * Convert fraction string to number
+ * Indent text by specified amount
+ * 
+ * @param text - Text to indent
+ * @param indent - Indentation to add
+ * @returns Indented text
+ * 
+ * @example
+ * ```typescript
+ * indent('let x = 1;\nprint(x)', '  ');
+ * // '  let x = 1;\n  print(x)'
+ * ```
  */
-export function convertFraction(value: string): number {
-  const [num, denom] = value.split('/').map(Number);
-  if (denom === 0) {
-    throw new ValueError('Division by zero');
-  }
-  return num / denom;
+export function indent(text: string, indent: string = '    '): string {
+    if (!text) return '';
+    return text
+        .split(/\r?\n/)
+        .map(line => indent + line)
+        .join('\n');
 }
 
 /**
- * Basic dictionary conversion
+ * Wrap text at specified width
+ * 
+ * @param text - Text to wrap
+ * @param width - Maximum line width
+ * @returns Wrapped text
+ * 
+ * @example
+ * ```typescript
+ * wrap('This is a long line of text', 10);
+ * // 'This is a\nlong line\nof text'
+ * ```
  */
-export function toDict(input: any, options: Partial<ToDictOptions> = {}): StringKeyedDict {
-  if (input === null || input === UNDEFINED) {
-    return {};
-  }
+export function wrap(text: string, width: number = 80): string {
+    if (!text) return '';
+    if (width <= 0) throw new ParseError('Width must be positive');
 
-  if (typeof input === 'object') {
-    return { ...input };
-  }
+    const words = text.split(/\s+/);
+    const lines: string[] = [];
+    let currentLine = '';
 
-  try {
-    return JSON.parse(input);
-  } catch {
-    return { [String(input)]: input };
-  }
+    for (const word of words) {
+        if (currentLine.length + word.length + 1 <= width) {
+            currentLine += (currentLine ? ' ' : '') + word;
+        } else {
+            if (currentLine) lines.push(currentLine);
+            currentLine = word;
+        }
+    }
+
+    if (currentLine) lines.push(currentLine);
+    return lines.join('\n');
 }
 
 /**
- * Convert any input to array
+ * Unwrap text by joining lines
+ * 
+ * @param text - Text to unwrap
+ * @returns Unwrapped text
+ * 
+ * @example
+ * ```typescript
+ * unwrap('This is a\nlong line\nof text');
+ * // 'This is a long line of text'
+ * ```
  */
-export function toList(
-  input: any,
-  options: Partial<ToListOptions> = {}
-): any[] {
-  const { flatten = false, dropna = false, unique = false, useValues = false } = options;
-
-  if (unique && !flatten) {
-    throw new ValueError('unique=true requires flatten=true');
-  }
-
-  if (input === null || input === UNDEFINED) {
-    return [];
-  }
-
-  let result: any[];
-
-  if (Array.isArray(input)) {
-    result = input;
-  } else if (typeof input === 'string') {
-    result = useValues ? Array.from(input) : [input];
-  } else if (typeof input === 'object') {
-    result = useValues ? Object.values(input) : [input];
-  } else {
-    result = [input];
-  }
-
-  if (flatten) {
-    result = result.flat(Infinity);
-  }
-
-  if (dropna) {
-    result = result.filter(x => x != null);
-  }
-
-  if (unique) {
-    result = [...new Set(result)];
-  }
-
-  return result;
+export function unwrap(text: string): string {
+    if (!text) return '';
+    return text
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
 }

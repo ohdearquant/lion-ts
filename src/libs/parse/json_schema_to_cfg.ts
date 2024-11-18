@@ -8,8 +8,8 @@ type JsonSchema = {
     [key: string]: any;
 };
 
-type Production = [string, string[]];
-type Productions = Production[];
+export type Production = [string, string[]];
+export type Productions = Production[];
 
 /**
  * Convert JSON schema to context-free grammar productions
@@ -187,24 +187,3 @@ export const grammarUtils = {
         });
     }
 };
-
-// Example usage:
-/*
-const schema = {
-    type: 'object',
-    properties: {
-        name: { type: 'string' },
-        age: { type: 'integer' },
-        address: {
-            type: 'object',
-            properties: {
-                street: { type: 'string' },
-                city: { type: 'string' }
-            }
-        }
-    }
-};
-
-const grammar = jsonSchemaToGrammar(schema);
-console.log(grammar);
-*/

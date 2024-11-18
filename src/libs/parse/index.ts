@@ -23,7 +23,7 @@ export { validateMapping } from './validate_mapping';
 // Extraction utilities
 export { extractCodeBlock } from './extract_code_block';
 export { extractDocstring } from './extract_docstring';
-export { extractJsonBlocks, extractBlock } from './extract_json_blocks';
+export { extractJsonBlocks, extractJsonBlock } from './extract_json_blocks';
 export { extractJsonSchema } from './extract_json_schema';
 
 // Schema utilities

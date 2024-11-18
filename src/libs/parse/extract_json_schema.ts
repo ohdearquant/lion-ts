@@ -1,5 +1,3 @@
-import { flatten } from '../nested/flatten';
-import { ValueError } from '../errors';
 import { JsonSchema, JsonSchemaType } from './types';
 
 /**
@@ -24,197 +22,118 @@ export interface SchemaOptions {
  * @param data - JSON data to extract schema from
  * @param options - Extraction options
  * @returns JSON Schema object
- * 
- * @example
- * ```typescript
- * const data = {
- *     name: 'John',
- *     age: 30,
- *     addresses: [
- *         { street: '123 Main St', city: 'Anytown' },
- *         { street: '456 Oak Rd', city: 'Somewhere' }
- *     ]
- * };
- * 
- * const schema = extractJsonSchema(data);
- * // {
- * //     type: 'object',
- * //     properties: {
- * //         name: { type: 'string' },
- * //         age: { type: 'integer' },
- * //         addresses: {
- * //             type: 'array',
- * //             items: {
- * //                 type: 'object',
- * //                 properties: {
- * //                     street: { type: 'string' },
- * //                     city: { type: 'string' }
- * //                 }
- * //             }
- * //         }
- * //     }
- * // }
- * ```
  */
 export function extractJsonSchema(
     data: unknown,
     options: SchemaOptions = {}
 ): JsonSchema {
     const {
-        sep = '|',
-        coerceKeys = true,
-        dynamic = true,
-        coerceSequence = null,
-        maxDepth = undefined
+        maxDepth = Infinity,
+        dynamic = false,
+        coerceSequence = null
     } = options;
 
-    // Flatten the data structure
-    const flattened = flatten(data, {
-        sep,
-        coerceKeys,
-        dynamic,
-        coerceSequence,
-        maxDepth
-    });
-
-    // Build initial schema structure
-    const schema: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(flattened)) {
-        const keyParts = key.split(sep);
-        let current = schema;
-        
-        // Build nested structure
-        for (let i = 0; i < keyParts.length - 1; i++) {
-            const part = keyParts[i];
-            current[part] = current[part] || {};
-            const next = current[part];
-            if (typeof next === 'object' && next !== null) {
-                current = next as Record<string, unknown>;
-            }
-        }
-
-        current[keyParts[keyParts.length - 1]] = getType(value);
+    if (data === null || data === undefined) {
+        return {
+            type: 'object',
+            properties: {}
+        };
     }
 
-    return {
-        type: 'object',
-        properties: consolidateSchema(schema)
-    };
+    // Handle array coercion
+    if (Array.isArray(data) && (dynamic || coerceSequence)) {
+        const arrayAsObject: Record<string, unknown> = {};
+        data.forEach((item, index) => {
+            arrayAsObject[index.toString()] = item;
+        });
+        const schema = buildSchema(arrayAsObject, 0, maxDepth);
+        schema.type = 'object';  // Force type to be object when coercing arrays
+        return schema;
+    }
+
+    return buildSchema(data, 0, maxDepth);
 }
 
 /**
- * Get JSON Schema type for a value
+ * Build schema recursively with depth tracking
  */
-function getType(value: unknown): JsonSchema {
-    if (value === null) {
+function buildSchema(data: unknown, depth: number, maxDepth: number): JsonSchema {
+    if (depth >= maxDepth) {
+        return { type: 'any' };
+    }
+
+    if (data === null) {
         return { type: 'null' };
     }
 
-    switch (typeof value) {
+    switch (typeof data) {
         case 'string':
             return { type: 'string' };
         case 'boolean':
             return { type: 'boolean' };
         case 'number':
-            return Number.isInteger(value) ? 
-                { type: 'integer' as JsonSchemaType } : 
-                { type: 'number' as JsonSchemaType };
+            return Number.isInteger(data) ? 
+                { type: 'integer' } : 
+                { type: 'number' };
         case 'object':
-            if (Array.isArray(value)) {
-                return getArraySchema(value);
+            if (Array.isArray(data)) {
+                return buildArraySchema(data, depth, maxDepth);
             }
             return {
                 type: 'object',
-                properties: consolidateSchema(
-                    Object.fromEntries(
-                        Object.entries(value)
-                            .map(([k, v]) => [k, getType(v)])
-                    )
-                )
+                properties: buildObjectProperties(data as Record<string, unknown>, depth, maxDepth)
             };
         default:
-            return { type: 'any' as JsonSchemaType };
+            return { type: 'any' };
     }
 }
 
 /**
- * Get schema for array type
+ * Build schema for array type
  */
-function getArraySchema(arr: unknown[]): JsonSchema {
+function buildArraySchema(arr: unknown[], depth: number, maxDepth: number): JsonSchema {
     if (arr.length === 0) {
-        return { type: 'array', items: { type: 'any' as JsonSchemaType } };
+        return { type: 'array', items: { type: 'any' } };
     }
 
-    const itemTypes = arr.map(getType);
-    const allSame = itemTypes.every(type => 
-        JSON.stringify(type) === JSON.stringify(itemTypes[0])
-    );
+    // Get schema for first item to use as base
+    const baseSchema = buildSchema(arr[0], depth + 1, maxDepth);
+
+    // Check if all items match the base schema
+    const allSame = arr.every(item => {
+        const itemSchema = buildSchema(item, depth + 1, maxDepth);
+        return JSON.stringify(itemSchema) === JSON.stringify(baseSchema);
+    });
 
     if (allSame) {
         return {
             type: 'array',
-            items: itemTypes[0]
+            items: baseSchema
         };
     }
 
+    // If items have different schemas, include all variations
+    const itemSchemas = arr.map(item => buildSchema(item, depth + 1, maxDepth));
     return {
         type: 'array',
-        items: itemTypes[0],
-        oneOf: itemTypes
+        items: { type: 'any' },
+        oneOf: itemSchemas
     };
 }
 
 /**
- * Consolidate schema structure
+ * Build properties for object type
  */
-function consolidateSchema(
-    schema: Record<string, unknown>
+function buildObjectProperties(
+    obj: Record<string, unknown>,
+    depth: number,
+    maxDepth: number
 ): Record<string, JsonSchema> {
-    const consolidated: Record<string, JsonSchema> = {};
+    const properties: Record<string, JsonSchema> = {};
 
-    for (const [key, value] of Object.entries(schema)) {
-        if (isSchemaObject(value)) {
-            consolidated[key] = value as JsonSchema;
-        } else if (typeof value === 'object' && value !== null) {
-            const obj = value as Record<string, unknown>;
-            
-            // Check if it's a numeric-keyed object (potential array)
-            if (Object.keys(obj).every(k => /^\d+$/.test(k))) {
-                const itemTypes = Object.values(obj);
-                const allSame = itemTypes.every(type =>
-                    JSON.stringify(type) === JSON.stringify(itemTypes[0])
-                );
-
-                if (allSame) {
-                    consolidated[key] = {
-                        type: 'array',
-                        items: itemTypes[0] as JsonSchema
-                    };
-                } else {
-                    consolidated[key] = {
-                        type: 'array',
-                        items: itemTypes[0] as JsonSchema,
-                        oneOf: itemTypes as JsonSchema[]
-                    };
-                }
-            } else {
-                consolidated[key] = {
-                    type: 'object',
-                    properties: consolidateSchema(obj)
-                };
-            }
-        }
+    for (const [key, value] of Object.entries(obj)) {
+        properties[key] = buildSchema(value, depth + 1, maxDepth);
     }
 
-    return consolidated;
-}
-
-/**
- * Type guard for schema objects
- */
-function isSchemaObject(value: unknown): value is JsonSchema {
-    return typeof value === 'object' &&
-           value !== null &&
-           'type' in value &&
-           typeof (value as JsonSchema).type === 'string';
+    return properties;
 }

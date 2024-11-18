@@ -1,84 +1,112 @@
-import { TRUE_VALUES, FALSE_VALUES } from '../../constants';
+import { ValueError, TypeError as CustomTypeError } from '../errors';
+import { TRUE_VALUES, FALSE_VALUES } from '../../constants/parse';
 
 /**
- * Forcefully validate and convert the input into a boolean value.
+ * Convert various input types to boolean.
  * 
- * This function attempts to convert various input types to a boolean value.
- * It recognizes common string representations of true and false, as well
- * as numeric values. The conversion is case-insensitive.
- * 
- * @param x - The input to be converted to boolean. Can be:
- *   - Boolean: returned as-is
- *   - Number (including complex): converted using JavaScript's bool rules
- *   - String: converted based on common boolean representations
- *   - null or undefined: raises TypeError
- *   - Other types: converted to string and then evaluated
- * @returns The boolean representation of the input.
- * @throws Error if the input cannot be unambiguously converted to a boolean value.
- * @throws TypeError if the input type is unsupported or null/undefined.
+ * @param input - Value to convert to boolean
+ * @returns Boolean value
+ * @throws TypeError if input cannot be converted to boolean
+ * @throws ValueError if input string is not a valid boolean value
  * 
  * @example
  * ```typescript
- * validateBoolean(true); // true
- * validateBoolean("yes"); // true
- * validateBoolean("OFF"); // false
- * validateBoolean(1); // true
- * validateBoolean(0); // false
- * validateBoolean(1 + 1j); // true
+ * validateBoolean(true) // true
+ * validateBoolean('yes') // true
+ * validateBoolean('false') // false
+ * validateBoolean(1) // true
+ * validateBoolean(0) // false
  * ```
- * 
- * @remarks
- * - String matching is case-insensitive
- * - Leading/trailing whitespace is stripped
- * - Numeric values follow JavaScript's Boolean() rules
- * - null or undefined values raise TypeError
- * - Empty strings raise Error
  */
-export function validateBoolean(x: any): boolean {
-  if (x === null || x === undefined) {
-    throw new TypeError("Cannot convert null or undefined to boolean");
-  }
-
-  if (typeof x === 'boolean') {
-    return x;
-  }
-
-  // Handle all numeric types using JavaScript's Boolean
-  if (typeof x === 'number') {
-    return Boolean(x);
-  }
-
-  // Convert to string if not already a string
-  if (typeof x !== 'string') {
-    try {
-      x = String(x);
-    } catch (e) {
-      throw new TypeError(`Cannot convert ${typeof x} to boolean: ${e}`);
+export function validateBoolean(input: any): boolean {
+    // Handle null/undefined
+    if (input === null || input === undefined) {
+        throw new CustomTypeError('Cannot convert null or undefined to boolean');
     }
-  }
 
-  // Handle string inputs
-  const xCleaned = x.trim().toLowerCase();
+    // Handle boolean values
+    if (typeof input === 'boolean') {
+        return input;
+    }
 
-  if (!xCleaned) {
-    throw new Error("Cannot convert empty string to boolean");
-  }
+    // Handle numeric values
+    if (typeof input === 'number') {
+        return Boolean(input);
+    }
 
-  if (TRUE_VALUES.has(xCleaned)) {
-    return true;
-  }
+    // Handle string values
+    if (typeof input === 'string') {
+        // Clean and normalize the string
+        const strValue = input.trim()
+            .toLowerCase()
+            // Remove special characters and punctuation, keeping alphanumeric and basic symbols
+            .replace(/[^a-z0-9\-\/]/g, '');
 
-  if (FALSE_VALUES.has(xCleaned)) {
-    return false;
-  }
+        if (!strValue) {
+            throw new ValueError('Cannot convert empty string to boolean');
+        }
 
-  // Try numeric conversion as a last resort
-  try {
-    return Boolean(parseFloat(xCleaned));
-  } catch {
-    throw new Error(
-      `Cannot convert '${x}' to boolean. Valid true values are: ${[...TRUE_VALUES]}, ` +
-      `valid false values are: ${[...FALSE_VALUES]}`
-    );
-  }
+        // Check for true values
+        if (TRUE_VALUES.has(strValue)) {
+            return true;
+        }
+
+        // Check for false values
+        if (FALSE_VALUES.has(strValue)) {
+            return false;
+        }
+
+        // Try numeric conversion
+        const num = Number(strValue);
+        if (!isNaN(num)) {
+            return Boolean(num);
+        }
+
+        throw new ValueError(
+            `Cannot convert string '${input}' to boolean. ` +
+            `Valid true values are: ${Array.from(TRUE_VALUES).join(', ')}. ` +
+            `Valid false values are: ${Array.from(FALSE_VALUES).join(', ')}.`
+        );
+    }
+
+    // Handle objects with custom boolean conversion
+    if (typeof input === 'object' && input !== null) {
+        // Handle arrays
+        if (Array.isArray(input)) {
+            throw new TypeError();
+        }
+
+        // Try valueOf() method
+        if (typeof input.valueOf === 'function') {
+            try {
+                const value = input.valueOf();
+                if (typeof value === 'boolean') {
+                    return value;
+                }
+                if (typeof value === 'number') {
+                    return Boolean(value);
+                }
+                if (typeof value === 'string' && value !== input.toString()) {
+                    return validateBoolean(value);
+                }
+            } catch {
+                // Ignore conversion errors and continue
+            }
+        }
+
+        // Try toString() method
+        if (typeof input.toString === 'function') {
+            try {
+                const str = input.toString();
+                if (str !== '[object Object]') {
+                    return validateBoolean(str);
+                }
+            } catch {
+                // Ignore conversion errors and continue
+            }
+        }
+    }
+
+    // If we get here, the type is not supported
+    throw new TypeError();
 }

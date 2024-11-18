@@ -1,9 +1,11 @@
+import { ParseError } from './types';
+
 /**
  * Parse a JSON string with automatic fixing of common formatting issues.
  * 
  * @param strToParse - The JSON string to parse
  * @returns Parsed JSON object
- * @throws Error if parsing fails after all fixing attempts
+ * @throws ParseError if parsing fails after all fixing attempts
  */
 export function fuzzyParseJson(
     strToParse: string
@@ -13,45 +15,62 @@ export function fuzzyParseJson(
     }
 
     if (!strToParse.trim()) {
-        throw new Error('Input string is empty');
+        throw new ParseError('Input string is empty');
     }
 
     // Try direct parsing first
     try {
         const result = JSON.parse(strToParse);
-        if (typeof result !== 'object' || result === null) {
-            throw new TypeError('Parsed result must be an object or array');
-        }
+        validateResult(result);
         return result;
-    } catch {
+    } catch (error) {
+        if (error instanceof TypeError) {
+            throw error; // Re-throw TypeError for non-object/array results
+        }
         // Continue to cleaning stage
     }
 
+    // Clean the string
+    const cleaned = cleanJsonString(strToParse);
+
     // Try parsing cleaned string
     try {
-        const cleaned = cleanJsonString(strToParse);
         const result = JSON.parse(cleaned);
-        if (typeof result !== 'object' || result === null) {
-            throw new TypeError('Parsed result must be an object or array');
-        }
+        validateResult(result);
         return result;
-    } catch {
+    } catch (error) {
+        if (error instanceof TypeError) {
+            throw error; // Re-throw TypeError for non-object/array results
+        }
         // Continue to fixing stage
     }
 
     // Try parsing fixed string
     try {
-        const cleaned = cleanJsonString(strToParse);
+        // Check for invalid JSON patterns before trying to fix
+        if (cleaned.match(/[^\\]:[^:]*:/)) {
+            throw new ParseError('Invalid JSON: Multiple colons in a single key-value pair');
+        }
         const fixed = fixJsonString(cleaned);
         const result = JSON.parse(fixed);
-        if (typeof result !== 'object' || result === null) {
-            throw new TypeError('Parsed result must be an object or array');
-        }
+        validateResult(result);
         return result;
     } catch (error) {
-        throw new Error(
-            `Failed to parse JSON string after all fixing attempts: ${error}`
-        );
+        if (error instanceof TypeError) {
+            throw error; // Re-throw TypeError for non-object/array results
+        }
+        // Try one more time with aggressive fixing
+        try {
+            const fixed = aggressivelyFixJsonString(cleaned);
+            const result = JSON.parse(fixed);
+            validateResult(result);
+            return result;
+        } catch (finalError) {
+            if (finalError instanceof TypeError) {
+                throw finalError;
+            }
+            throw new ParseError('Failed to parse JSON with fuzzy matching');
+        }
     }
 }
 
@@ -60,12 +79,25 @@ export function fuzzyParseJson(
  */
 function cleanJsonString(s: string): string {
     return s
+        // Remove comments
+        .replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '')
         // Replace single quotes with double quotes
         .replace(/(?<!\\)'/g, '"')
-        // Normalize whitespace
-        .replace(/\s+/g, ' ')
         // Add quotes to unquoted keys
-        .replace(/([{,])\s*([^"\s]+):/g, '$1"$2":')
+        .replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3')
+        // Fix trailing commas
+        .replace(/,(\s*[}\]])/g, '$1')
+        // Fix missing commas
+        .replace(/(["\d\w])\s+"/g, '$1,"')
+        // Fix undefined/null values
+        .replace(/:\s*(undefined|null)\b/gi, ':null')
+        // Fix boolean values
+        .replace(/:\s*(true|false)\b/gi, (match, bool) => 
+            `:${bool.toLowerCase()}`
+        )
+        // Fix special numeric values
+        .replace(/:\s*(NaN|-?Infinity)\b/g, ':null')
+        // Remove extra whitespace
         .trim();
 }
 
@@ -74,7 +106,7 @@ function cleanJsonString(s: string): string {
  */
 function fixJsonString(strToParse: string): string {
     if (!strToParse) {
-        throw new Error('Input string is empty');
+        throw new ParseError('Input string is empty');
     }
 
     const brackets: Record<string, string> = {
@@ -85,6 +117,7 @@ function fixJsonString(strToParse: string): string {
     const openBrackets: string[] = [];
     let pos = 0;
     const length = strToParse.length;
+    let inString = false;
 
     while (pos < length) {
         const char = strToParse[pos];
@@ -97,18 +130,12 @@ function fixJsonString(strToParse: string): string {
 
         // Handle string content
         if (char === '"') {
+            inString = !inString;
             pos++;
-            // Skip until closing quote, accounting for escapes
-            while (pos < length) {
-                if (strToParse[pos] === '\\') {
-                    pos += 2; // Skip escape sequence
-                    continue;
-                }
-                if (strToParse[pos] === '"') {
-                    break;
-                }
-                pos++;
-            }
+            continue;
+        }
+
+        if (inString) {
             pos++;
             continue;
         }
@@ -118,12 +145,12 @@ function fixJsonString(strToParse: string): string {
             openBrackets.push(brackets[char]);
         } else if (Object.values(brackets).includes(char)) {
             if (openBrackets.length === 0) {
-                throw new Error(
+                throw new ParseError(
                     `Extra closing bracket '${char}' at position ${pos}`
                 );
             }
             if (openBrackets[openBrackets.length - 1] !== char) {
-                throw new Error(
+                throw new ParseError(
                     `Mismatched bracket '${char}' at position ${pos}`
                 );
             }
@@ -139,37 +166,51 @@ function fixJsonString(strToParse: string): string {
 }
 
 /**
- * Additional utility functions for common JSON fixes
+ * Aggressively fix a JSON string by trying multiple strategies
  */
-function fixCommonJsonIssues(str: string): string {
-    return str
-        // Fix trailing commas
-        .replace(/,(\s*[}\]])/g, '$1')
-        // Fix missing commas
-        .replace(/("[^"]*")\s+"/g, '$1,"')
-        // Fix undefined values
-        .replace(/:\s*undefined\s*([,}])/g, ':null$1')
-        // Fix JavaScript-style comments
-        .replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '')
-        // Fix NaN and Infinity
-        .replace(/:\s*(NaN|-?Infinity)\s*([,}])/g, ':null$1');
-}
-
-// Example usage:
-/*
-const jsonStr = `{
-    name: 'John',
-    age: 30,
-    address: {
-        street: "123 Main St",
-        city: 'Anytown'
+function aggressivelyFixJsonString(str: string): string {
+    // First try to balance brackets
+    const brackets: Record<string, string> = {
+        '{': '}',
+        '[': ']'
+    };
+    
+    const openBrackets: string[] = [];
+    let result = str;
+    
+    // Count open brackets
+    for (let i = 0; i < str.length; i++) {
+        const char = str[i];
+        if (char in brackets) {
+            openBrackets.push(brackets[char]);
+        } else if (Object.values(brackets).includes(char)) {
+            if (openBrackets.length > 0) {
+                openBrackets.pop();
+            }
+        }
     }
-}`;
-
-try {
-    const parsed = fuzzyParseJson(jsonStr);
-    console.log(parsed);
-} catch (error) {
-    console.error('Failed to parse JSON:', error);
+    
+    // Add missing closing brackets
+    if (openBrackets.length > 0) {
+        result += openBrackets.reverse().join('');
+    }
+    
+    return result;
 }
-*/
+
+/**
+ * Validate that the parsed result is an object or array of objects
+ */
+function validateResult(result: unknown): asserts result is Record<string, unknown> | Array<Record<string, unknown>> {
+    if (result === null || typeof result !== 'object') {
+        throw new TypeError('Parsed result must be an object or array');
+    }
+
+    if (Array.isArray(result)) {
+        result.forEach((item, index) => {
+            if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+                throw new TypeError(`Array item at index ${index} must be an object`);
+            }
+        });
+    }
+}

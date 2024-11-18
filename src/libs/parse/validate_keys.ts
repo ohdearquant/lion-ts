@@ -1,155 +1,201 @@
-import { 
-  stringSimilarity, 
-  SIMILARITY_ALGO_MAP, 
-  type SimilarityAlgorithm,
-  type SimilarityFunction,
-  type SimilarityResult
-} from '../string_similarity';
+import { toDict } from './to_dict';
+import { stringSimilarity, type SimilarityAlgorithm, type SimilarityFunction } from '../string_similarity';
 import { ValueError, TypeError } from '../errors';
+import type { StringKeyedDict } from './types';
+
+type HandleUnmatchedMode = 'ignore' | 'remove' | 'fill' | 'force' | 'raise';
 
 /**
- * Dictionary mapping keys to their expected types
+ * Normalize key for comparison
  */
-export type KeysDict = Record<string, string>;
+function normalizeKey(key: string): string {
+    return key
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '')
+        .trim();
+}
 
 /**
- * Validate and correct dictionary keys based on expected keys using string similarity.
- * 
- * @param d_ - The dictionary to validate and correct keys for.
- * @param keys - List of expected keys or dictionary mapping keys to types.
- * @param similarity_algo - String similarity algorithm to use or custom function.
- * @param similarity_threshold - Minimum similarity score for fuzzy matching.
- * @param fuzzy_match - If True, use fuzzy matching for key correction.
- * @param handle_unmatched - Specifies how to handle unmatched keys:
- *   - "ignore": Keep unmatched keys in output.
- *   - "raise": Raise ValueError if unmatched keys exist.
- *   - "remove": Remove unmatched keys from output.
- *   - "fill": Fill unmatched keys with default value/mapping.
- *   - "force": Combine "fill" and "remove" behaviors.
- * @param fill_value - Default value for filling unmatched keys.
- * @param fill_mapping - Dictionary mapping unmatched keys to default values.
- * @param strict - If True, raise ValueError if any expected key is missing.
- * @returns A new dictionary with validated and corrected keys.
- * @throws ValueError - If validation fails based on specified parameters.
- * @throws TypeError - If input types are invalid.
+ * Check if two keys match
+ */
+function keysMatch(key1: string, key2: string): boolean {
+    return normalizeKey(key1) === normalizeKey(key2);
+}
+
+/**
+ * Validate dictionary keys against expected keys
  */
 export function validateKeys(
-  d_: Record<string, any>,
-  keys: string[] | KeysDict,
-  similarity_algo: SimilarityAlgorithm | SimilarityFunction = 'jaro_winkler',
-  similarity_threshold: number = 0.85,
-  fuzzy_match: boolean = true,
-  handle_unmatched: 'ignore' | 'raise' | 'remove' | 'fill' | 'force' = 'ignore',
-  fill_value: any = null,
-  fill_mapping: Record<string, any> | null = null,
-  strict: boolean = false
-): Record<string, any> {
-  // Input validation
-  if (typeof d_ !== 'object' || d_ === null) {
-    throw new TypeError('First argument must be a dictionary');
-  }
-  if (keys === null) {
-    throw new TypeError('Keys argument cannot be null');
-  }
-  if (similarity_threshold < 0.0 || similarity_threshold > 1.0) {
-    throw new ValueError('similarity_threshold must be between 0.0 and 1.0');
-  }
-
-  // Extract expected keys
-  const fields_set = Array.isArray(keys) ? new Set(keys) : new Set(Object.keys(keys));
-  if (fields_set.size === 0) {
-    return { ...d_ }; // Return copy of original if no expected keys
-  }
-
-  // Initialize output dictionary and tracking sets
-  const corrected_out: Record<string, any> = {};
-  const matched_expected = new Set<string>();
-  const matched_input = new Set<string>();
-
-  // Get similarity function
-  let similarity_func: SimilarityFunction;
-  if (typeof similarity_algo === 'string') {
-    if (!(similarity_algo in SIMILARITY_ALGO_MAP)) {
-      throw new ValueError(`Unknown similarity algorithm: ${similarity_algo}`);
-    }
-    similarity_func = SIMILARITY_ALGO_MAP[similarity_algo];
-  } else {
-    similarity_func = similarity_algo;
-  }
-
-  // First pass: exact matches
-  for (const key of Object.keys(d_)) {
-    if (fields_set.has(key)) {
-      corrected_out[key] = d_[key];
-      matched_expected.add(key);
-      matched_input.add(key);
-    }
-  }
-
-  // Second pass: fuzzy matching if enabled
-  if (fuzzy_match) {
-    const remaining_input = new Set(Object.keys(d_).filter(key => !matched_input.has(key)));
-    const remaining_expected = new Set(Array.from(fields_set).filter(key => !matched_expected.has(key)));
-
-    for (const key of remaining_input) {
-      if (remaining_expected.size === 0) {
-        break;
-      }
-
-      const result = stringSimilarity(
-        key,
-        Array.from(remaining_expected),
-        {
-          algorithm: similarity_algo,
-          threshold: similarity_threshold,
-          returnMostSimilar: true
+    input: StringKeyedDict,
+    expectedKeys: string[],
+    similarityAlgo: SimilarityAlgorithm | SimilarityFunction = 'jaro_winkler',
+    similarityThreshold: number = 0.8,
+    fuzzyMatch: boolean = false,
+    handleUnmatched: HandleUnmatchedMode = 'ignore',
+    fillValue: any = null,
+    fillMapping: Record<string, any> | null = null,
+    strict: boolean = false
+): StringKeyedDict {
+    try {
+        // Handle null/undefined input
+        if (input === null || input === undefined) {
+            throw new TypeError('Cannot validate null or undefined input');
         }
-      );
 
-      if (result !== null) {
-        const match = result as string;
-        corrected_out[match] = d_[key];
-        matched_expected.add(match);
-        matched_input.add(key);
-        remaining_expected.delete(match);
-      } else if (handle_unmatched === 'ignore') {
-        corrected_out[key] = d_[key];
-      }
+        // Handle null/undefined expected keys
+        if (expectedKeys === null || expectedKeys === undefined) {
+            throw new TypeError('Expected keys cannot be null or undefined');
+        }
+
+        // Handle empty expected keys
+        if (expectedKeys.length === 0) {
+            return toDict(input);
+        }
+
+        // Validate similarity threshold
+        if (similarityThreshold < 0 || similarityThreshold > 1) {
+            throw new ValueError('Similarity threshold must be between 0 and 1');
+        }
+
+        // Validate similarity algorithm
+        if (typeof similarityAlgo === 'string' && !['jaro_winkler', 'levenshtein', 'sequence_matcher', 'hamming', 'cosine'].includes(similarityAlgo)) {
+            throw new ValueError(`Invalid similarity algorithm: ${similarityAlgo}`);
+        }
+
+        // Convert input to dictionary if needed
+        const dictInput = toDict(input);
+        const inputKeys = new Set(Object.keys(dictInput));
+        const matchedKeys = new Map<string, string>(); // input -> expected
+        const result: StringKeyedDict = {};
+
+        // First pass: exact matches (case insensitive)
+        for (const expectedKey of expectedKeys) {
+            for (const inputKey of inputKeys) {
+                if (keysMatch(inputKey, expectedKey)) {
+                    matchedKeys.set(inputKey, expectedKey);
+                    inputKeys.delete(inputKey);
+                    break;
+                }
+            }
+        }
+
+        // Second pass: fuzzy matches if enabled
+        if (fuzzyMatch && inputKeys.size > 0 && expectedKeys.length > 0) {
+            const unmatchedExpected = expectedKeys.filter(key => 
+                !Array.from(matchedKeys.values()).includes(key)
+            );
+
+            for (const inputKey of Array.from(inputKeys)) {
+                let bestMatch = '';
+                let bestSimilarity = 0;
+
+                const normalizedInput = normalizeKey(inputKey);
+                for (const expectedKey of unmatchedExpected) {
+                    const normalizedExpected = normalizeKey(expectedKey);
+
+                    // Try exact match first
+                    if (normalizedInput === normalizedExpected) {
+                        bestMatch = expectedKey;
+                        bestSimilarity = 1;
+                        break;
+                    }
+
+                    // Then try fuzzy match
+                    const similarity = typeof similarityAlgo === 'function'
+                        ? similarityAlgo(normalizedInput, normalizedExpected)
+                        : stringSimilarity(normalizedInput, [normalizedExpected], {
+                            algorithm: similarityAlgo,
+                            caseSensitive: false,
+                            returnMostSimilar: true
+                        });
+
+                    const score = typeof similarity === 'string' ? 1 : (typeof similarity === 'number' ? similarity : 0);
+                    if (score >= similarityThreshold && score > bestSimilarity) {
+                        bestMatch = expectedKey;
+                        bestSimilarity = score;
+                    }
+                }
+
+                if (bestMatch) {
+                    matchedKeys.set(inputKey, bestMatch);
+                    inputKeys.delete(inputKey);                }
+            }
+        }
+
+        // Handle strict mode first
+        if (strict) {
+            const missing = expectedKeys.filter(key => 
+                !Array.from(matchedKeys.values()).includes(key)
+            );
+            if (missing.length > 0) {
+                throw new ValueError(`Missing required keys: ${missing.join(', ')}`);
+            }
+            if (inputKeys.size > 0) {
+                throw new ValueError(`Unmatched keys found: ${Array.from(inputKeys).join(', ')}`);
+            }
+        }
+
+        // Build result based on mode
+        if (handleUnmatched === 'ignore') {
+            // Add matched keys with original names if not fuzzy matching
+            if (!fuzzyMatch) {
+                for (const [inputKey, expectedKey] of matchedKeys.entries()) {
+                    result[inputKey] = dictInput[inputKey];
+                }
+            } else {
+                // In fuzzy match mode, use expected keys
+                for (const [inputKey, expectedKey] of matchedKeys.entries()) {
+                    result[expectedKey] = dictInput[inputKey];
+                }
+            }
+            // Keep unmatched keys with original names
+            for (const key of inputKeys) {
+                result[key] = dictInput[key];
+            }
+        } else {
+            // For all other modes, use expected keys for matches
+            for (const [inputKey, expectedKey] of matchedKeys.entries()) {
+                result[expectedKey] = dictInput[inputKey];
+            }
+
+            // Handle unmatched keys based on mode
+            if (handleUnmatched === 'fill') {
+                // Add unmatched input keys
+                for (const key of inputKeys) {
+                    result[key] = dictInput[key];
+                }
+                // Fill missing expected keys
+                for (const expectedKey of expectedKeys) {
+                    if (!result.hasOwnProperty(expectedKey)) {
+                        result[expectedKey] = fillMapping && expectedKey in fillMapping 
+                            ? fillMapping[expectedKey] 
+                            : fillValue;
+                    }
+                }
+            } else if (handleUnmatched === 'force') {
+                // Fill missing expected keys
+                for (const expectedKey of expectedKeys) {
+                    if (!result.hasOwnProperty(expectedKey)) {
+                        result[expectedKey] = fillMapping && expectedKey in fillMapping 
+                            ? fillMapping[expectedKey] 
+                            : fillValue;
+                    }
+                }
+            } else if (handleUnmatched === 'raise') {
+                const missing = expectedKeys.filter(key => 
+                    !Array.from(matchedKeys.values()).includes(key)
+                );
+                if (missing.length > 0) {
+                    throw new ValueError(`Missing required keys: ${missing.join(', ')}`);
+                }
+                if (inputKeys.size > 0) {
+                    throw new ValueError(`Unmatched keys found: ${Array.from(inputKeys).join(', ')}`);
+                }
+            }
+        }
+
+        return result;
+    } catch (error) {
+        throw error instanceof ValueError || error instanceof TypeError ? error : new ValueError(String(error));
     }
-  }
-
-  // Handle unmatched keys based on handle_unmatched parameter
-  const unmatched_input = new Set(Object.keys(d_).filter(key => !matched_input.has(key)));
-  const unmatched_expected = new Set(Array.from(fields_set).filter(key => !matched_expected.has(key)));
-
-  if (handle_unmatched === 'raise' && unmatched_input.size > 0) {
-    throw new ValueError(`Unmatched keys found: ${Array.from(unmatched_input)}`);
-  } else if (handle_unmatched === 'ignore') {
-    for (const key of unmatched_input) {
-      corrected_out[key] = d_[key];
-    }
-  } else if (handle_unmatched === 'fill' || handle_unmatched === 'force') {
-    // Fill missing expected keys
-    for (const key of unmatched_expected) {
-      if (fill_mapping && key in fill_mapping) {
-        corrected_out[key] = fill_mapping[key];
-      } else {
-        corrected_out[key] = fill_value;
-      }
-    }
-
-    // For "fill" mode, also keep unmatched original keys
-    if (handle_unmatched === 'fill') {
-      for (const key of unmatched_input) {
-        corrected_out[key] = d_[key];
-      }
-    }
-  }
-
-  // Check strict mode
-  if (strict && unmatched_expected.size > 0) {
-    throw new ValueError(`Missing required keys: ${Array.from(unmatched_expected)}`);
-  }
-
-  return corrected_out;
 }

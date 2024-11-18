@@ -1,93 +1,251 @@
 import { toJson } from './to_json';
-import { toDict } from './to_dict';
-import { validateKeys, type KeysDict } from './validate_keys';
+import { stringSimilarity } from '../string_similarity';
 import { ValueError, TypeError } from '../errors';
-import { type SimilarityAlgorithm, type SimilarityFunction } from '../string_similarity';
+import { extractCodeBlock } from './extract_code_block';
+import type { StringKeyedDict } from './types';
+
+type HandleUnmatchedMode = 'ignore' | 'remove' | 'fill' | 'force' | 'raise';
+
+interface ValidateMappingOptions {
+    similarityThreshold?: number;
+    fuzzyMatch?: boolean;
+    suppress?: boolean;
+    strict?: boolean;
+    fillValue?: any;
+    fillMapping?: Record<string, any>;
+    handleUnmatched?: HandleUnmatchedMode;
+    similarityFunction?: (a: string, b: string) => number;
+}
 
 /**
- * Validate and correct any input into a dictionary with expected keys.
- * 
- * @param d - Input to validate. Can be:
- *   - Dictionary
- *   - JSON string or markdown code block
- *   - XML string
- *   - Object with to_dict/model_dump method
- *   - Any type convertible to dictionary
- * @param keys - List of expected keys or dictionary mapping keys to types.
- * @param similarity_algo - String similarity algorithm or custom function.
- * @param similarity_threshold - Minimum similarity score for fuzzy matching.
- * @param fuzzy_match - If True, use fuzzy matching for key correction.
- * @param handle_unmatched - How to handle unmatched keys:
- *   - "ignore": Keep unmatched keys
- *   - "raise": Raise error for unmatched keys
- *   - "remove": Remove unmatched keys
- *   - "fill": Fill missing keys with default values
- *   - "force": Combine "fill" and "remove" behaviors
- * @param fill_value - Default value for filling unmatched keys.
- * @param fill_mapping - Dictionary mapping keys to default values.
- * @param strict - Raise error if any expected key is missing.
- * @param suppress_conversion_errors - Return empty dict on conversion errors.
- * @returns Validated and corrected dictionary.
- * @throws ValueError - If input cannot be converted or validation fails.
- * @throws TypeError - If input types are invalid.
+ * Find best matching key using similarity
+ */
+function findBestMatch(
+    expectedKey: string,
+    keys: Set<string>,
+    threshold: number,
+    similarityFunction?: (a: string, b: string) => number
+): string | null {
+    let bestMatch = null;
+    let bestSimilarity = 0;
+
+    for (const key of keys) {
+        const similarity = similarityFunction
+            ? similarityFunction(expectedKey, key)
+            : stringSimilarity(expectedKey, [key], {
+                caseSensitive: false,
+                returnMostSimilar: true
+            });
+
+        const score = typeof similarity === 'number' ? similarity : 0;
+        if (score >= threshold && score > bestSimilarity) {
+            bestMatch = key;
+            bestSimilarity = score;
+        }
+    }
+
+    return bestMatch;
+}
+
+/**
+ * Get fill value for a key
+ */
+function getFillValue(key: string, fillMapping: Record<string, any>, fillValue: any): any {
+    return fillMapping.hasOwnProperty(key) ? fillMapping[key] : fillValue;
+}
+
+/**
+ * Parse string input to object
+ */
+function parseStringInput(input: string): Record<string, unknown> {
+    if (input.trim().startsWith('```')) {
+        const extracted = extractCodeBlock(input);
+        if (typeof extracted === 'string') {
+            return toJson(extracted, { fuzzyParse: true }) as Record<string, unknown>;
+        }
+        throw new ValueError('Failed to extract code block');
+    }
+    return toJson(input, { fuzzyParse: true }) as Record<string, unknown>;
+}
+
+/**
+ * Validate and correct dictionary keys based on expected mapping.
  */
 export function validateMapping(
-  d: any,
-  keys: string[] | KeysDict,
-  similarity_algo: SimilarityAlgorithm | SimilarityFunction = 'jaro_winkler',
-  similarity_threshold: number = 0.85,
-  fuzzy_match: boolean = true,
-  handle_unmatched: 'ignore' | 'raise' | 'remove' | 'fill' | 'force' = 'ignore',
-  fill_value: any = null,
-  fill_mapping: Record<string, any> | null = null,
-  strict: boolean = false,
-  suppress_conversion_errors: boolean = false
-): Record<string, any> {
-  if (d === null || d === undefined) {
-    throw new TypeError("Input cannot be null or undefined");
-  }
+    input: unknown,
+    mapping: StringKeyedDict,
+    options: ValidateMappingOptions = {}
+): Record<string, unknown> {
+    const {
+        similarityThreshold = 0.8,
+        fuzzyMatch = true,
+        suppress = false,
+        strict = false,
+        fillValue = null,
+        fillMapping = {},
+        handleUnmatched = 'ignore',
+        similarityFunction
+    } = options;
 
-  // Try converting to dictionary
-  let dictInput: Record<string, any>;
-  try {
-    if (typeof d === 'string') {
-      // First try toJson for JSON strings and code blocks
-      try {
-        const jsonResult = toJson(d);
-        dictInput = Array.isArray(jsonResult) ? jsonResult[0] : jsonResult;
-      } catch {
-        // Fall back to toDict for other string formats
-        dictInput = toDict(d, { strType: 'json', fuzzyParse: true, suppress: true });
-      }
-    } else {
-      dictInput = toDict(d, { fuzzyParse: true, suppress: true });
-    }
+    try {
+        // Handle null/undefined input
+        if (input === null || input === undefined) {
+            throw new TypeError('Cannot validate null or undefined input');
+        }
 
-    if (typeof dictInput !== 'object' || dictInput === null) {
-      if (suppress_conversion_errors) {
-        dictInput = {};
-      } else {
-        throw new ValueError(`Failed to convert input to dictionary: ${typeof dictInput}`);
-      }
-    }
-  } catch (e) {
-    if (suppress_conversion_errors) {
-      dictInput = {};
-    } else {
-      throw new ValueError(`Failed to convert input to dictionary: ${e}`);
-    }
-  }
+        // Convert input to dictionary
+        let dictInput: Record<string, unknown>;
+        try {
+            if (typeof input === 'string') {
+                dictInput = parseStringInput(input);
+            } else if (typeof input === 'object' && input !== null) {
+                if (Object.keys(input as object).length === 0) {
+                    if (strict) {
+                        throw new ValueError('Empty input in strict mode');
+                    }
+                    if (handleUnmatched === 'fill' || handleUnmatched === 'force') {
+                        const result: Record<string, unknown> = {};
+                        for (const key of Object.keys(mapping)) {
+                            result[key] = getFillValue(key, fillMapping, fillValue);
+                        }
+                        return result;
+                    }
+                    return {};
+                }
+                dictInput = input as Record<string, unknown>;
+            } else {
+                throw new TypeError('Input must be a string or object');
+            }
+        } catch (e) {
+            if (suppress) {
+                const result: Record<string, unknown> = {};
+                if (handleUnmatched === 'fill' || handleUnmatched === 'force') {
+                    for (const key of Object.keys(mapping)) {
+                        result[key] = getFillValue(key, fillMapping, fillValue);
+                    }
+                }
+                return result;
+            }
+            throw e;
+        }
 
-  // Validate the dictionary
-  return validateKeys(
-    dictInput,
-    keys,
-    similarity_algo,
-    similarity_threshold,
-    fuzzy_match,
-    handle_unmatched,
-    fill_value,
-    fill_mapping,
-    strict
-  );
+        // Initialize tracking variables
+        let result: Record<string, unknown> = {};
+        const inputKeys = new Set(Object.keys(dictInput));
+        const matchedKeys = new Map<string, string>(); // inputKey -> expectedKey
+
+        // First pass: exact matches (case-insensitive)
+        for (const expectedKey of Object.keys(mapping)) {
+            for (const inputKey of inputKeys) {
+                if (inputKey.toLowerCase() === expectedKey.toLowerCase()) {
+                    matchedKeys.set(inputKey, expectedKey);
+                    inputKeys.delete(inputKey);
+                    break;
+                }
+            }
+        }
+
+        // Second pass: fuzzy matches if enabled
+        if (fuzzyMatch) {
+            const unmatchedExpectedKeys = Object.keys(mapping).filter(
+                key => !Array.from(matchedKeys.values()).includes(key)
+            );
+
+            for (const expectedKey of unmatchedExpectedKeys) {
+                const match = findBestMatch(expectedKey, inputKeys, similarityThreshold, similarityFunction);
+                if (match) {
+                    matchedKeys.set(match, expectedKey);
+                    inputKeys.delete(match);
+                }
+            }
+        }
+
+        // Handle strict mode
+        if (strict) {
+            const missingExpectedKeys = Object.keys(mapping).filter(
+                key => !Array.from(matchedKeys.values()).includes(key)
+            );
+            if (missingExpectedKeys.length > 0) {
+                throw new ValueError(`Missing required keys: ${missingExpectedKeys.join(', ')}`);
+            }
+            if (inputKeys.size > 0) {
+                throw new ValueError(`Unmatched keys found: ${Array.from(inputKeys).join(', ')}`);
+            }
+        }
+
+        // Build result based on handleUnmatched mode
+        switch (handleUnmatched) {
+            case 'ignore':
+                // Keep all input keys and matched keys with expected names
+                result = { ...dictInput };
+                for (const [inputKey, expectedKey] of matchedKeys.entries()) {
+                    if (inputKey !== expectedKey) {
+                        result[expectedKey] = dictInput[inputKey];
+                        delete result[inputKey];
+                    }
+                }
+                break;
+
+            case 'remove':
+                // Only include matched keys with expected names
+                for (const [inputKey, expectedKey] of matchedKeys.entries()) {
+                    result[expectedKey] = dictInput[inputKey];
+                }
+                break;
+
+            case 'fill':
+                // Include matched keys with expected names
+                for (const [inputKey, expectedKey] of matchedKeys.entries()) {
+                    result[expectedKey] = dictInput[inputKey];
+                }
+                // Include unmatched input keys
+                for (const inputKey of inputKeys) {
+                    result[inputKey] = dictInput[inputKey];
+                }
+                // Fill missing expected keys
+                for (const expectedKey of Object.keys(mapping)) {
+                    if (!result.hasOwnProperty(expectedKey)) {
+                        result[expectedKey] = getFillValue(expectedKey, fillMapping, fillValue);
+                    }
+                }
+                break;
+
+            case 'force':
+                // Only include expected keys
+                for (const expectedKey of Object.keys(mapping)) {
+                    const inputKey = Array.from(matchedKeys.entries())
+                        .find(([_, exp]) => exp === expectedKey)?.[0];
+                    result[expectedKey] = inputKey
+                        ? dictInput[inputKey]
+                        : getFillValue(expectedKey, fillMapping, fillValue);
+                }
+                break;
+
+            case 'raise':
+                if (inputKeys.size > 0) {
+                    throw new ValueError(`Unmatched keys found: ${Array.from(inputKeys).join(', ')}`);
+                }
+                // Include matched keys with expected names
+                for (const [inputKey, expectedKey] of matchedKeys.entries()) {
+                    result[expectedKey] = dictInput[inputKey];
+                }
+                break;
+
+            default:
+                throw new ValueError(`Invalid handleUnmatched mode: ${handleUnmatched}`);
+        }
+
+        return result;
+    } catch (error) {
+        if (suppress && !(error instanceof TypeError)) {
+            const result: Record<string, unknown> = {};
+            if (handleUnmatched === 'fill' || handleUnmatched === 'force') {
+                for (const key of Object.keys(mapping)) {
+                    result[key] = getFillValue(key, fillMapping, fillValue);
+                }
+            }
+            return result;
+        }
+        throw error;
+    }
 }
