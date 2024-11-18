@@ -69,12 +69,34 @@ export function toNum(
 
 function extractNumbers(text: string): NumberMatch[] {
     const matches: NumberMatch[] = [];
-    const tokens = text.split(/[\s,;:]+/);
 
+    // First try to match complex numbers with scientific notation
+    let remaining = text;
+    let match;
+
+    // Try complex_sci first
+    while ((match = remaining.match(PATTERNS.complex_sci))) {
+        matches.push(['complex', match[0]]);
+        remaining = remaining.slice(0, match.index) + ' ' + remaining.slice(match.index! + match[0].length);
+    }
+
+    // Then try other complex patterns
+    while ((match = remaining.match(PATTERNS.complex))) {
+        matches.push(['complex', match[0]]);
+        remaining = remaining.slice(0, match.index) + ' ' + remaining.slice(match.index! + match[0].length);
+    }
+
+    while ((match = remaining.match(PATTERNS.pure_imaginary))) {
+        matches.push(['complex', match[0]]);
+        remaining = remaining.slice(0, match.index) + ' ' + remaining.slice(match.index! + match[0].length);
+    }
+
+    // Then try other patterns on the remaining text
+    const tokens = remaining.split(/[\s,;:]+/);
     for (const token of tokens) {
-        if (PATTERNS.complex.test(token) || PATTERNS.pure_imaginary.test(token)) {
-            matches.push(['complex', token]);
-        } else if (PATTERNS.scientific.test(token)) {
+        if (!token) continue;
+        
+        if (PATTERNS.scientific.test(token)) {
             matches.push(['scientific', token]);
         } else if (PATTERNS.percentage.test(token)) {
             matches.push(['percentage', token]);
@@ -83,9 +105,10 @@ function extractNumbers(text: string): NumberMatch[] {
         } else if (PATTERNS.special.test(token)) {
             matches.push(['special', token]);
         } else if (PATTERNS.decimal.test(token)) {
-            const parsed = parseFloat(token);
-            if (!isNaN(parsed)) {
-                matches.push(['decimal', token]);
+            const cleanValue = token.trim();
+            const dec = parseFloat(cleanValue);
+            if (!isNaN(dec)) {
+                matches.push(['decimal', cleanValue]);
             }
         }
     }
@@ -99,6 +122,7 @@ function parseNumber([type, value]: NumberMatch): number | Complex {
     switch (type) {
         case 'special': {
             const lower = value.toLowerCase();
+            if (lower.includes('nan')) return NaN;
             return lower.startsWith('-') ? -Infinity : Infinity;
         }
 
@@ -112,8 +136,8 @@ function parseNumber([type, value]: NumberMatch): number | Complex {
 
         case 'fraction': {
             const [numStr, denomStr] = value.split('/');
-            const numerator = parseInt(numStr, 10);
-            const denominator = parseInt(denomStr, 10);
+            const numerator = parseFloat(numStr);
+            const denominator = parseFloat(denomStr);
             if (isNaN(numerator) || isNaN(denominator)) {
                 throw new ParseError(`Invalid fraction: ${value}`);
             }
@@ -124,38 +148,67 @@ function parseNumber([type, value]: NumberMatch): number | Complex {
         }
 
         case 'complex': {
-            if (value.endsWith('j') || value.endsWith('J')) {
+            try {
                 if (value === 'j' || value === 'J') {
+                    return new Complex(0, 1);
+                }
+                if (value === '+j' || value === '+J') {
                     return new Complex(0, 1);
                 }
                 if (value === '-j' || value === '-J') {
                     return new Complex(0, -1);
                 }
-                const match = value.slice(0, -1).match(/([+-]?\d*\.?\d+)([+-]\d*\.?\d+)/);
-                if (!match) {
-                    const imaginary = parseFloat(value.slice(0, -1));
-                    if (isNaN(imaginary)) {
-                        throw new ParseError(`Invalid complex number: ${value}`);
+
+                // Handle pure imaginary numbers
+                if (value.endsWith('j') || value.endsWith('J')) {
+                    if (!value.includes('+') && !value.includes('-', 1)) {
+                        const imag = parseFloat(value.slice(0, -1) || '1');
+                        if (isNaN(imag)) {
+                            throw new ParseError(`Invalid complex number: ${value}`);
+                        }
+                        return new Complex(0, imag);
                     }
-                    return new Complex(0, imaginary);
                 }
-                const real = parseFloat(match[1]);
-                const imaginary = parseFloat(match[2]);
-                if (isNaN(real) || isNaN(imaginary)) {
+
+                // Remove j/J suffix
+                const withoutJ = value.slice(0, -1);
+
+                // Split into real and imaginary parts
+                const parts = withoutJ.split(/([+-])/);
+                let real = 0;
+                let imag = 0;
+
+                if (parts.length === 1) {
+                    // Single number (imaginary part)
+                    imag = parseFloat(parts[0] || '1');
+                } else {
+                    // Handle scientific notation and regular numbers
+                    const realPart = parts[0];
+                    const sign = parts[1];
+                    const imagPart = parts.slice(2).join('');
+                    
+                    real = parseFloat(realPart);
+                    imag = parseFloat(sign + (imagPart || '1'));
+                }
+
+                if (isNaN(real) || isNaN(imag)) {
                     throw new ParseError(`Invalid complex number: ${value}`);
                 }
-                return new Complex(real, imaginary);
+
+                return new Complex(real, imag);
+            } catch (e) {
+                throw new ParseError(`Invalid complex number: ${value}`);
             }
-            throw new ParseError(`Invalid complex number: ${value}`);
         }
 
         case 'scientific':
         case 'decimal': {
-            const parsed = parseFloat(value);
-            if (isNaN(parsed)) {
+            const cleanValue = value.trim();
+            const dec = parseFloat(cleanValue);
+            if (isNaN(dec)) {
                 throw new ParseError(`No valid numbers found in: ${value}`);
             }
-            return parsed;
+            return dec;
         }
 
         default:

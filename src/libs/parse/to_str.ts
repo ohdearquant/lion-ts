@@ -54,13 +54,13 @@ async function serializeAs(
 
             const processedDict = processDict(dict);
             return format === 'json' 
-                ? JSON.stringify(processedDict, null, indent)
+                ? JSON.stringify(processedDict, null, stripLower ? 0 : indent)
                 : dictToXml(processedDict, rootTag, { pretty: true, indent: ' '.repeat(indent) });
         }
 
         // Direct conversion
         return format === 'json'
-            ? JSON.stringify(dict, null, indent)
+            ? JSON.stringify(dict, null, stripLower ? 0 : indent)
             : dictToXml(dict, rootTag, { pretty: true, indent: ' '.repeat(indent) });
     } catch (error) {
         if (suppress) {
@@ -82,12 +82,21 @@ function toStrType(input: any): string {
         return '';
     }
 
+    // Handle empty arrays
     if (Array.isArray(input) && input.length === 0) {
         return '';
     }
 
-    if (typeof input === 'object' && input !== null && Object.keys(input).length === 0) {
+    // Handle empty plain objects (but not custom objects)
+    if (input && typeof input === 'object' && 
+        Object.getPrototypeOf(input) === Object.prototype && 
+        Object.keys(input).length === 0) {
         return '';
+    }
+
+    // Handle non-convertible types
+    if (typeof input === 'symbol') {
+        throw new ParseError('Cannot convert Symbol to string');
     }
 
     // Handle binary data
@@ -119,14 +128,17 @@ function toStrType(input: any): string {
     }
 
     // Handle custom toString
-    if (typeof input.toString === 'function' && input.toString !== Object.prototype.toString) {
-        try {
-            const result = input.toString();
-            if (result !== '[object Object]') {
-                return result;
+    if (input && typeof input === 'object' && typeof input.toString === 'function') {
+        const customToString = input.toString;
+        if (customToString !== Object.prototype.toString) {
+            try {
+                const result = customToString.call(input);
+                if (result && result !== '[object Object]') {
+                    return result;
+                }
+            } catch {
+                // Fall through to JSON handling
             }
-        } catch {
-            // Fall through to JSON handling
         }
     }
 

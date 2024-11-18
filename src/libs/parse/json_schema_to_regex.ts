@@ -1,130 +1,91 @@
-/**
- * Types for JSON Schema and Grammar Productions
- */
-type JsonSchema = {
-    type?: string;
-    properties?: Record<string, JsonSchema>;
-    items?: JsonSchema;
-    required?: string[];
-    [key: string]: any;
-};
-
-type Production = [string, string[]];
+import { ParseError } from './types';
 
 /**
- * Convert JSON schema to regular expression pattern
+ * Convert a JSON schema to a regular expression pattern.
+ * 
+ * @param schema - The JSON schema to convert
+ * @returns A regular expression pattern that matches JSON strings conforming to the schema
  */
-export function jsonSchemaToRegex(schema: JsonSchema): string {
+export function jsonSchemaToRegex(schema: any): string {
+    function escapeRegExp(str: string): string {
+        return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    function schemaToRegex(s: any): string {
+        if (s.type === 'object') {
+            const properties = s.properties || {};
+            if (Object.keys(properties).length === 0) {
+                return '\\{\\s*\\}';
+            }
+
+            // Create patterns for each property
+            const propPatterns = Object.entries(properties).map(([prop, propSchema]) => 
+                `"${escapeRegExp(prop)}"\\s*:\\s*${schemaToRegex(propSchema)}`
+            );
+
+            // All properties must be present but can be in any order
+            const allProps = propPatterns.join('\\s*,\\s*');
+            const permutations = generatePermutations(propPatterns);
+            return '\\{\\s*(' + permutations.join('|') + ')\\s*\\}';
+        }
+        
+        if (s.type === 'array') {
+            const items = s.items || {};
+            const itemPattern = schemaToRegex(items);
+            return '\\[\\s*(' + itemPattern + '(\\s*,\\s*' + itemPattern + ')*)?\\s*\\]';
+        }
+        
+        if (s.type === 'string') {
+            return '"[^"]*"';
+        }
+        
+        if (s.type === 'integer') {
+            return '-?\\d+';
+        }
+        
+        if (s.type === 'number') {
+            return '-?\\d+(\\.\\d+)?';
+        }
+        
+        if (s.type === 'boolean') {
+            return '(true|false)';
+        }
+        
+        if (s.type === 'null') {
+            return 'null';
+        }
+
+        return '.*';
+    }
+
     return '^' + schemaToRegex(schema) + '$';
 }
 
 /**
- * Convert schema component to regex pattern
+ * Generate all possible permutations of property patterns
  */
-function schemaToRegex(schema: JsonSchema): string {
-    switch (schema.type) {
-        case 'object':
-            return generateObjectPattern(schema);
-        case 'array':
-            return generateArrayPattern(schema);
-        case 'string':
-            return generateStringPattern();
-        case 'integer':
-            return generateIntegerPattern();
-        case 'number':
-            return generateNumberPattern();
-        case 'boolean':
-            return generateBooleanPattern();
-        case 'null':
-            return generateNullPattern();
-        default:
-            return '.*';
-    }
-}
-
-/**
- * Generate pattern for object type
- */
-function generateObjectPattern(schema: JsonSchema): string {
-    const properties = schema.properties || {};
-    const required = new Set(schema.required || []);
+function generatePermutations(patterns: string[]): string[] {
+    if (patterns.length <= 1) return patterns;
     
-    if (Object.keys(properties).length === 0) {
-        return '\\{\\s*\\}';
+    const result: string[] = [];
+    for (let i = 0; i < patterns.length; i++) {
+        const current = patterns[i];
+        const remaining = [...patterns.slice(0, i), ...patterns.slice(i + 1)];
+        const subPermutations = generatePermutations(remaining);
+        
+        for (const subPerm of subPermutations) {
+            result.push(current + '\\s*,\\s*' + subPerm);
+        }
     }
-
-    const propPatterns = Object.entries(properties).map(([prop, propSchema]) => {
-        const propPattern = `"${escapeRegex(prop)}"\\s*:\\s*${schemaToRegex(propSchema)}`;
-        return required.has(prop) ? propPattern : `(?:${propPattern})?`;
-    });
-
-    const propPattern = propPatterns.join('\\s*,\\s*');
-    
-    return '\\{\\s*' + propPattern + '\\s*\\}';
+    return result;
 }
 
 /**
- * Generate pattern for array type
- */
-function generateArrayPattern(schema: JsonSchema): string {
-    if (!schema.items) {
-        return '\\[\\s*\\]';
-    }
-
-    const itemPattern = schemaToRegex(schema.items);
-    
-    return '\\[\\s*(?:' +
-           itemPattern +
-           '(?:\\s*,\\s*' +
-           itemPattern +
-           ')*)?\\s*\\]';
-}
-
-/**
- * Generate patterns for primitive types
- */
-function generateStringPattern(): string {
-    return '"[^"]*"';
-}
-
-function generateIntegerPattern(): string {
-    return '-?\\d+';
-}
-
-function generateNumberPattern(): string {
-    return '-?\\d+(?:\\.\\d+)?';
-}
-
-function generateBooleanPattern(): string {
-    return '(?:true|false)';
-}
-
-function generateNullPattern(): string {
-    return 'null';
-}
-
-/**
- * Escape special regex characters
- */
-function escapeRegex(str: string): string {
-    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/**
- * Print context-free grammar productions
- */
-export function printCFG(productions: Production[]): string {
-    return productions
-        .map(([lhs, rhs]) => `${lhs} -> ${rhs.join(' ')}`)
-        .join('\n');
-}
-
-/**
- * Utility functions for working with generated patterns
+ * Utility functions for testing regex patterns
  */
 export const regexUtils = {
     /**
-     * Test if a string matches the generated pattern
+     * Test if a string matches a regex pattern
      */
     testPattern(pattern: string, input: string): boolean {
         try {
@@ -137,7 +98,20 @@ export const regexUtils = {
     },
 
     /**
-     * Validate a generated pattern
+     * Find all matches of a pattern in a string
+     */
+    findMatches(pattern: string, input: string): string[] {
+        try {
+            const regex = new RegExp(pattern, 'g');
+            return input.match(regex) || [];
+        } catch (error) {
+            console.error('Invalid regex pattern:', error);
+            return [];
+        }
+    },
+
+    /**
+     * Validate if a pattern is a valid regular expression
      */
     validatePattern(pattern: string): boolean {
         try {
@@ -149,12 +123,30 @@ export const regexUtils = {
     },
 
     /**
-     * Get a simplified version of the pattern
+     * Simplify a regex pattern by removing unnecessary escapes and whitespace
      */
     simplifyPattern(pattern: string): string {
-        return pattern
-            .replace(/\\s\+/g, '\\s*')  // Replace \s+ with \s*
-            .replace(/\s+/g, ' ')      // Normalize actual whitespace
-            .trim();
+        // First preserve escaped sequences
+        const preserved: { [key: string]: string } = {};
+        let counter = 0;
+        pattern = pattern.replace(/\\[a-z*+]/g, (match) => {
+            const placeholder = `__PRESERVED_${counter}__`;
+            preserved[placeholder] = match;
+            counter++;
+            return placeholder;
+        });
+        
+        // Remove unnecessary whitespace
+        pattern = pattern.replace(/\s+/g, '');
+        
+        // Replace preserved sequences
+        Object.entries(preserved).forEach(([placeholder, value]) => {
+            pattern = pattern.replace(placeholder, value);
+        });
+        
+        // Convert \s+ to \s*
+        pattern = pattern.replace(/\\s\+/g, '\\s*');
+        
+        return pattern;
     }
 };

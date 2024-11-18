@@ -18,6 +18,35 @@ interface ValidateMappingOptions {
 }
 
 /**
+ * Normalize key for comparison
+ */
+function normalizeKey(key: string): string {
+    return key.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Calculate similarity between two strings
+ */
+function calculateSimilarity(str1: string, str2: string, similarityFunction?: (a: string, b: string) => number): number {
+    if (similarityFunction) {
+        return similarityFunction(str1, str2);
+    }
+
+    // For high thresholds, require exact match after normalization
+    if (str1 === str2) {
+        return 1;
+    }
+
+    // For fuzzy matching, use string similarity
+    const similarity = stringSimilarity(str1, [str2], {
+        caseSensitive: false,
+        returnMostSimilar: true
+    });
+
+    return typeof similarity === 'number' ? similarity : 0;
+}
+
+/**
  * Find best matching key using similarity
  */
 function findBestMatch(
@@ -29,18 +58,25 @@ function findBestMatch(
     let bestMatch = null;
     let bestSimilarity = 0;
 
-    for (const key of keys) {
-        const similarity = similarityFunction
-            ? similarityFunction(expectedKey, key)
-            : stringSimilarity(expectedKey, [key], {
-                caseSensitive: false,
-                returnMostSimilar: true
-            });
+    // Normalize expected key for comparison
+    const normalizedExpected = normalizeKey(expectedKey);
 
-        const score = typeof similarity === 'number' ? similarity : 0;
-        if (score >= threshold && score > bestSimilarity) {
+    for (const key of keys) {
+        const normalizedKey = normalizeKey(key);
+        
+        // For high thresholds (>= 0.9), require exact match after normalization
+        if (threshold >= 0.9) {
+            if (normalizedKey === normalizedExpected) {
+                return key;
+            }
+            continue;
+        }
+
+        // For lower thresholds, use fuzzy matching
+        const similarity = calculateSimilarity(normalizedKey, normalizedExpected, similarityFunction);
+        if (similarity >= threshold && similarity > bestSimilarity) {
             bestMatch = key;
-            bestSimilarity = score;
+            bestSimilarity = similarity;
         }
     }
 
@@ -138,11 +174,13 @@ export function validateMapping(
         let result: Record<string, unknown> = {};
         const inputKeys = new Set(Object.keys(dictInput));
         const matchedKeys = new Map<string, string>(); // inputKey -> expectedKey
+        const expectedKeys = Object.keys(mapping);
 
         // First pass: exact matches (case-insensitive)
-        for (const expectedKey of Object.keys(mapping)) {
+        for (const expectedKey of expectedKeys) {
+            const normalizedExpected = normalizeKey(expectedKey);
             for (const inputKey of inputKeys) {
-                if (inputKey.toLowerCase() === expectedKey.toLowerCase()) {
+                if (normalizeKey(inputKey) === normalizedExpected) {
                     matchedKeys.set(inputKey, expectedKey);
                     inputKeys.delete(inputKey);
                     break;
@@ -152,7 +190,7 @@ export function validateMapping(
 
         // Second pass: fuzzy matches if enabled
         if (fuzzyMatch) {
-            const unmatchedExpectedKeys = Object.keys(mapping).filter(
+            const unmatchedExpectedKeys = expectedKeys.filter(
                 key => !Array.from(matchedKeys.values()).includes(key)
             );
 
@@ -167,7 +205,7 @@ export function validateMapping(
 
         // Handle strict mode
         if (strict) {
-            const missingExpectedKeys = Object.keys(mapping).filter(
+            const missingExpectedKeys = expectedKeys.filter(
                 key => !Array.from(matchedKeys.values()).includes(key)
             );
             if (missingExpectedKeys.length > 0) {
@@ -181,34 +219,42 @@ export function validateMapping(
         // Handle unmatched keys based on mode
         switch (handleUnmatched) {
             case 'ignore':
-                // Keep all input keys and matched keys with expected names
+                // Keep all input keys and matched keys with original case
                 result = { ...dictInput };
                 for (const [inputKey, expectedKey] of matchedKeys.entries()) {
-                    if (inputKey !== expectedKey) {
+                    // For high thresholds or custom similarity function, preserve input key
+                    if (similarityFunction || similarityThreshold >= 0.9) {
+                        result[inputKey] = dictInput[inputKey];
+                    } else {
+                        // For default similarity, use expected key
                         result[expectedKey] = dictInput[inputKey];
-                        delete result[inputKey];
+                        if (inputKey !== expectedKey) {
+                            delete result[inputKey];
+                        }
                     }
                 }
                 break;
 
             case 'remove':
-                // Only include matched keys with expected names
+                // Only include matched keys with appropriate case
                 for (const [inputKey, expectedKey] of matchedKeys.entries()) {
-                    result[expectedKey] = dictInput[inputKey];
+                    const useKey = similarityFunction || similarityThreshold >= 0.9 ? inputKey : expectedKey;
+                    result[useKey] = dictInput[inputKey];
                 }
                 break;
 
             case 'fill':
-                // Include matched keys with expected names
+                // Include matched keys with appropriate case
                 for (const [inputKey, expectedKey] of matchedKeys.entries()) {
-                    result[expectedKey] = dictInput[inputKey];
+                    const useKey = similarityFunction || similarityThreshold >= 0.9 ? inputKey : expectedKey;
+                    result[useKey] = dictInput[inputKey];
                 }
                 // Include unmatched input keys
                 for (const inputKey of inputKeys) {
                     result[inputKey] = dictInput[inputKey];
                 }
                 // Fill missing expected keys
-                for (const expectedKey of Object.keys(mapping)) {
+                for (const expectedKey of expectedKeys) {
                     if (!result.hasOwnProperty(expectedKey)) {
                         result[expectedKey] = getFillValue(expectedKey, fillMapping, fillValue);
                     }
@@ -217,11 +263,11 @@ export function validateMapping(
 
             case 'force':
                 // Only include expected keys
-                for (const expectedKey of Object.keys(mapping)) {
-                    const inputKey = Array.from(matchedKeys.entries())
+                for (const expectedKey of expectedKeys) {
+                    const matchedInputKey = Array.from(matchedKeys.entries())
                         .find(([_, exp]) => exp === expectedKey)?.[0];
-                    result[expectedKey] = inputKey
-                        ? dictInput[inputKey]
+                    result[expectedKey] = matchedInputKey
+                        ? dictInput[matchedInputKey]
                         : getFillValue(expectedKey, fillMapping, fillValue);
                 }
                 break;
@@ -230,14 +276,15 @@ export function validateMapping(
                 if (inputKeys.size > 0) {
                     throw new ValueError(`Unmatched keys found: ${Array.from(inputKeys).join(', ')}`);
                 }
-                // Include matched keys with expected names
+                // Include matched keys with appropriate case
                 for (const [inputKey, expectedKey] of matchedKeys.entries()) {
-                    result[expectedKey] = dictInput[inputKey];
+                    const useKey = similarityFunction || similarityThreshold >= 0.9 ? inputKey : expectedKey;
+                    result[useKey] = dictInput[inputKey];
                 }
                 // Check for missing expected keys
-                const missingKeys = Object.keys(mapping).filter(
-                    key => !Object.keys(result).includes(key)
-                );
+                const missingKeys = expectedKeys.filter(key => {
+                    return !Array.from(matchedKeys.values()).includes(key);
+                });
                 if (missingKeys.length > 0) {
                     throw new ValueError(`Missing required keys: ${missingKeys.join(', ')}`);
                 }
