@@ -9,9 +9,11 @@ type HandleUnmatchedMode = 'ignore' | 'remove' | 'fill' | 'force' | 'raise';
  * Normalize key for comparison
  */
 function normalizeKey(key: string): string {
+    // Convert to lowercase and remove special characters
     return key
         .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '')
+        .replace(/[^a-z0-9]+/g, '_')  // Replace special chars with underscore
+        .replace(/^_+|_+$/g, '')      // Remove leading/trailing underscores
         .trim();
 }
 
@@ -29,8 +31,8 @@ export function validateKeys(
     input: StringKeyedDict,
     expectedKeys: string[],
     similarityAlgo: SimilarityAlgorithm | SimilarityFunction = 'jaro_winkler',
-    similarityThreshold: number = 0.8,
-    fuzzyMatch: boolean = false,
+    similarityThreshold: number = 0.85,  // Aligned with Python version
+    fuzzyMatch: boolean = false,         // Default to false to preserve original keys
     handleUnmatched: HandleUnmatchedMode = 'ignore',
     fillValue: any = null,
     fillMapping: Record<string, any> | null = null,
@@ -66,7 +68,7 @@ export function validateKeys(
         const dictInput = toDict(input);
         const inputKeys = new Set(Object.keys(dictInput));
         const matchedKeys = new Map<string, string>(); // input -> expected
-        const result: StringKeyedDict = {};
+        let result: StringKeyedDict = {};
 
         // First pass: exact matches (case insensitive)
         for (const expectedKey of expectedKeys) {
@@ -85,17 +87,17 @@ export function validateKeys(
                 !Array.from(matchedKeys.values()).includes(key)
             );
 
-            for (const inputKey of Array.from(inputKeys)) {
+            for (const expectedKey of unmatchedExpected) {
                 let bestMatch = '';
                 let bestSimilarity = 0;
 
-                const normalizedInput = normalizeKey(inputKey);
-                for (const expectedKey of unmatchedExpected) {
+                for (const inputKey of Array.from(inputKeys)) {
+                    const normalizedInput = normalizeKey(inputKey);
                     const normalizedExpected = normalizeKey(expectedKey);
 
                     // Try exact match first
                     if (normalizedInput === normalizedExpected) {
-                        bestMatch = expectedKey;
+                        bestMatch = inputKey;
                         bestSimilarity = 1;
                         break;
                     }
@@ -111,14 +113,15 @@ export function validateKeys(
 
                     const score = typeof similarity === 'string' ? 1 : (typeof similarity === 'number' ? similarity : 0);
                     if (score >= similarityThreshold && score > bestSimilarity) {
-                        bestMatch = expectedKey;
+                        bestMatch = inputKey;
                         bestSimilarity = score;
                     }
                 }
 
                 if (bestMatch) {
-                    matchedKeys.set(inputKey, bestMatch);
-                    inputKeys.delete(inputKey);                }
+                    matchedKeys.set(bestMatch, expectedKey);
+                    inputKeys.delete(bestMatch);
+                }
             }
         }
 
@@ -136,62 +139,79 @@ export function validateKeys(
         }
 
         // Build result based on mode
-        if (handleUnmatched === 'ignore') {
-            // Add matched keys with original names if not fuzzy matching
-            if (!fuzzyMatch) {
-                for (const [inputKey, expectedKey] of matchedKeys.entries()) {
-                    result[inputKey] = dictInput[inputKey];
+        switch (handleUnmatched) {
+            case 'ignore':
+                // Keep all input keys with original names
+                result = { ...dictInput };
+                // Update matched keys to expected names if fuzzy matching
+                if (fuzzyMatch) {
+                    for (const [inputKey, expectedKey] of matchedKeys.entries()) {
+                        if (inputKey !== expectedKey) {
+                            result[expectedKey] = dictInput[inputKey];
+                            delete result[inputKey];
+                        }
+                    }
                 }
-            } else {
-                // In fuzzy match mode, use expected keys
-                for (const [inputKey, expectedKey] of matchedKeys.entries()) {
-                    result[expectedKey] = dictInput[inputKey];
-                }
-            }
-            // Keep unmatched keys with original names
-            for (const key of inputKeys) {
-                result[key] = dictInput[key];
-            }
-        } else {
-            // For all other modes, use expected keys for matches
-            for (const [inputKey, expectedKey] of matchedKeys.entries()) {
-                result[expectedKey] = dictInput[inputKey];
-            }
+                break;
 
-            // Handle unmatched keys based on mode
-            if (handleUnmatched === 'fill') {
-                // Add unmatched input keys
+            case 'remove':
+                // Only include matched keys with expected names
+                for (const [inputKey, expectedKey] of matchedKeys.entries()) {
+                    result[fuzzyMatch ? expectedKey : inputKey] = dictInput[inputKey];
+                }
+                break;
+
+            case 'fill':
+                // Include matched keys with expected names
+                for (const [inputKey, expectedKey] of matchedKeys.entries()) {
+                    result[fuzzyMatch ? expectedKey : inputKey] = dictInput[inputKey];
+                }
+                // Include unmatched input keys
                 for (const key of inputKeys) {
                     result[key] = dictInput[key];
                 }
                 // Fill missing expected keys
                 for (const expectedKey of expectedKeys) {
-                    if (!result.hasOwnProperty(expectedKey)) {
+                    if (!Array.from(matchedKeys.values()).includes(expectedKey)) {
                         result[expectedKey] = fillMapping && expectedKey in fillMapping 
                             ? fillMapping[expectedKey] 
                             : fillValue;
                     }
                 }
-            } else if (handleUnmatched === 'force') {
-                // Fill missing expected keys
+                break;
+
+            case 'force':
+                // Only include expected keys
                 for (const expectedKey of expectedKeys) {
-                    if (!result.hasOwnProperty(expectedKey)) {
-                        result[expectedKey] = fillMapping && expectedKey in fillMapping 
+                    const inputKey = Array.from(matchedKeys.entries())
+                        .find(([_, exp]) => exp === expectedKey)?.[0];
+                    result[expectedKey] = inputKey
+                        ? dictInput[inputKey]
+                        : (fillMapping && expectedKey in fillMapping 
                             ? fillMapping[expectedKey] 
-                            : fillValue;
-                    }
+                            : fillValue);
                 }
-            } else if (handleUnmatched === 'raise') {
+                break;
+
+            case 'raise':
+                if (inputKeys.size > 0) {
+                    throw new ValueError(`Unmatched keys found: ${Array.from(inputKeys).join(', ')}`);
+                }
+                // Include matched keys with expected names
+                for (const [inputKey, expectedKey] of matchedKeys.entries()) {
+                    result[fuzzyMatch ? expectedKey : inputKey] = dictInput[inputKey];
+                }
+                // Check for missing expected keys
                 const missing = expectedKeys.filter(key => 
                     !Array.from(matchedKeys.values()).includes(key)
                 );
                 if (missing.length > 0) {
                     throw new ValueError(`Missing required keys: ${missing.join(', ')}`);
                 }
-                if (inputKeys.size > 0) {
-                    throw new ValueError(`Unmatched keys found: ${Array.from(inputKeys).join(', ')}`);
-                }
-            }
+                break;
+
+            default:
+                throw new ValueError(`Invalid handleUnmatched mode: ${handleUnmatched}`);
         }
 
         return result;

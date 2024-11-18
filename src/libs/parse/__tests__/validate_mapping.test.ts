@@ -48,28 +48,45 @@ describe('validateMapping', () => {
         const inputDict = { name: 'John', extra: 'value' };
         const expectedKeys = { name: 'string', age: 'number' };
 
-        test.each([
-            ['ignore', ['name', 'extra']],
-            ['remove', ['name']],
-            ['fill', ['name', 'age', 'extra']],
-            ['force', ['name', 'age']]
-        ])('%s mode', (mode, expectedKeys) => {
+        test('ignore mode', () => {
             const result = validateMapping(inputDict, expectedKeys, {
-                similarityThreshold: 0.85,
-                fuzzyMatch: true,
-                suppress: false,
-                strict: false,
-                fillValue: null
+                handleUnmatched: 'ignore'
             });
-            expect(Object.keys(result).sort()).toEqual(expectedKeys.sort());
+            expect(result).toEqual({ name: 'John', extra: 'value' });
         });
 
-        test('raise mode throws error', () => {
-            expect(() => validateMapping(inputDict, { name: 'string' }, {
-                similarityThreshold: 0.85,
-                fuzzyMatch: true,
-                suppress: false,
-                strict: true
+        test('remove mode', () => {
+            const result = validateMapping(inputDict, expectedKeys, {
+                handleUnmatched: 'remove'
+            });
+            expect(result).toEqual({ name: 'John' });
+        });
+
+        test('fill mode', () => {
+            const result = validateMapping(inputDict, expectedKeys, {
+                handleUnmatched: 'fill',
+                fillValue: null
+            });
+            expect(result).toEqual({ name: 'John', age: null, extra: 'value' });
+        });
+
+        test('force mode', () => {
+            const result = validateMapping(inputDict, expectedKeys, {
+                handleUnmatched: 'force',
+                fillValue: null
+            });
+            expect(result).toEqual({ name: 'John', age: null });
+        });
+
+        test('raise mode throws error for unmatched keys', () => {
+            expect(() => validateMapping(inputDict, expectedKeys, {
+                handleUnmatched: 'raise'
+            })).toThrow(ValueError);
+        });
+
+        test('raise mode throws error for missing keys', () => {
+            expect(() => validateMapping({ name: 'John' }, { name: 'string', required: 'string' }, {
+                handleUnmatched: 'raise'
             })).toThrow(ValueError);
         });
     });
@@ -80,8 +97,7 @@ describe('validateMapping', () => {
         const fillMapping = { age: 30, email: 'test@example.com' };
 
         const result = validateMapping(inputDict, { name: 'string', age: 'number', email: 'string' }, {
-            similarityThreshold: 0.85,
-            fuzzyMatch: true,
+            handleUnmatched: 'fill',
             fillMapping
         });
         expect(result).toEqual({
@@ -102,9 +118,9 @@ describe('validateMapping', () => {
                 fuzzyMatch: true
             });
             if (shouldMatch) {
-                expect(result).toHaveProperty('username');
+                expect(result).toEqual({ username: 'John' });
             } else {
-                expect(result).not.toHaveProperty('username');
+                expect(result).toEqual({ user_name: 'John' });
             }
         });
     });
@@ -112,47 +128,64 @@ describe('validateMapping', () => {
     // Test error cases
     describe('error handling', () => {
         test('null input throws TypeError', () => {
-            expect(() => validateMapping({} as any, { key: 'string' }))
+            expect(() => validateMapping(null, { key: 'string' }))
+                .toThrow(TypeError);
+        });
+
+        test('undefined input throws TypeError', () => {
+            expect(() => validateMapping(undefined, { key: 'string' }))
                 .toThrow(TypeError);
         });
 
         test('empty input with strict mode throws ValueError', () => {
             expect(() => validateMapping({}, { required_key: 'string' }, {
-                similarityThreshold: 0.85,
-                fuzzyMatch: true,
+                strict: true
+            })).toThrow(ValueError);
+        });
+
+        test('empty input with fill mode returns filled object', () => {
+            const result = validateMapping({}, { key: 'string' }, {
+                handleUnmatched: 'fill',
+                fillValue: 'default'
+            });
+            expect(result).toEqual({ key: 'default' });
+        });
+    });
+
+    // Test strict mode
+    describe('strict mode', () => {
+        test('throws error on missing required fields', () => {
+            expect(() => validateMapping({ name: 'John' }, { name: 'string', required_field: 'string' }, {
+                strict: true
+            })).toThrow(ValueError);
+        });
+
+        test('throws error on extra fields', () => {
+            expect(() => validateMapping({ name: 'John', extra: 'value' }, { name: 'string' }, {
                 strict: true
             })).toThrow(ValueError);
         });
     });
 
-    // Test strict mode
-    test('strict mode validation', () => {
-        expect(() => validateMapping({ name: 'John' }, { name: 'string', required_field: 'string' }, {
-            similarityThreshold: 0.85,
-            fuzzyMatch: true,
-            strict: true
-        })).toThrow(ValueError);
-    });
-
     // Test custom similarity function
     test('custom similarity function', () => {
-        const caseInsensitiveMatch = (s1: string, s2: string): number => {
+        const customSimilarity = (s1: string, s2: string): number => {
             return s1.toLowerCase() === s2.toLowerCase() ? 1.0 : 0.0;
         };
 
         const result = validateMapping({ USER_NAME: 'John' }, { username: 'string' }, {
             similarityThreshold: 0.85,
-            fuzzyMatch: true
+            fuzzyMatch: true,
+            similarityFunction: customSimilarity
         });
-        expect(result).not.toHaveProperty('username');
+        expect(result).toEqual({ USER_NAME: 'John' });
     });
 
     // Test suppress conversion errors
     test('suppress conversion errors', () => {
-        const result = validateMapping(new Date() as any, { key: 'string' }, {
-            similarityThreshold: 0.85,
-            fuzzyMatch: true,
+        const result = validateMapping(new Date(), { key: 'string' }, {
             suppress: true,
+            handleUnmatched: 'fill',
             fillValue: null
         });
         expect(result).toEqual({ key: null });
@@ -196,10 +229,13 @@ describe('validateMapping', () => {
         test('handles special characters in keys', () => {
             const input = { 'user@name': 'John', 'age#value': 30 };
             const result = validateMapping(input, {
-                user_name: 'string',
+                username: 'string',
                 age_value: 'number'
+            }, {
+                fuzzyMatch: true,
+                similarityThreshold: 0.6
             });
-            expect(Object.keys(result).length).toBeGreaterThan(0);
+            expect(result).toEqual({ username: 'John', age_value: 30 });
         });
     });
 });

@@ -1,5 +1,6 @@
 import { validateBoolean } from '../validate_boolean';
 import { TRUE_VALUES, FALSE_VALUES } from '../../../constants/parse';
+import { ValueError, TypeError as CustomTypeError } from '../../errors';
 
 describe('validateBoolean', () => {
     // Test boolean inputs
@@ -36,16 +37,36 @@ describe('validateBoolean', () => {
         expect(validateBoolean(value)).toBe(expected);
     });
 
+    // Test complex number strings
+    describe('complex numbers', () => {
+        test.each([
+            ['0j', false],      // Pure imaginary zero
+            ['0+0j', false],    // Complex zero
+            ['1j', true],       // Pure imaginary one
+            ['1+0j', true],     // Real part only
+            ['0+1j', true],     // Imaginary part only
+            ['1+1j', true],     // Both parts
+            ['-1+1j', true],    // Negative real part
+            ['1-1j', true],     // Negative imaginary part
+            ['-1-1j', true],    // Both negative
+            ['j', true],        // Just j
+            ['+j', true],       // Positive j
+            ['-j', true],       // Negative j
+        ])('converts complex number string %s to %p', (value, expected) => {
+            expect(validateBoolean(value)).toBe(expected);
+        });
+    });
+
     // Test error cases
     describe('error handling', () => {
         test('throws TypeError for null', () => {
             expect(() => validateBoolean(null))
-                .toThrow('Cannot convert null or undefined to boolean');
+                .toThrow('Cannot convert None to boolean');
         });
 
         test('throws TypeError for undefined', () => {
             expect(() => validateBoolean(undefined))
-                .toThrow('Cannot convert null or undefined to boolean');
+                .toThrow('Cannot convert None to boolean');
         });
 
         test('throws Error for empty string', () => {
@@ -54,9 +75,16 @@ describe('validateBoolean', () => {
         });
 
         test('throws Error for invalid strings', () => {
-            expect(() => validateBoolean('invalid')).toThrow();
-            expect(() => validateBoolean('truthy')).toThrow();
-            expect(() => validateBoolean('falsey')).toThrow();
+            const error = `Cannot convert 'invalid' to boolean. Valid true values are: ${Array.from(TRUE_VALUES).sort().join(', ')}, valid false values are: ${Array.from(FALSE_VALUES).sort().join(', ')}`;
+            expect(() => validateBoolean('invalid')).toThrow(error);
+        });
+
+        test('throws TypeError for arrays', () => {
+            expect(() => validateBoolean([1, 2, 3])).toThrow('Cannot convert array to boolean');
+        });
+
+        test('throws TypeError for functions', () => {
+            expect(() => validateBoolean(() => {})).toThrow('Cannot convert function to boolean');
         });
     });
 
@@ -109,18 +137,22 @@ describe('validateBoolean', () => {
         }
 
         test('throws TypeError for objects that cannot be converted', () => {
-            expect(() => validateBoolean(new BadObject())).toThrow(TypeError);
+            expect(() => validateBoolean(new BadObject())).toThrow(CustomTypeError);
         });
     });
 
     // Test unsupported types
     describe('unsupported types', () => {
         test.each([
-            [Symbol('test'), 'Symbol'],
-            [() => {}, 'Function'],
-            [[1, 2, 3], 'Array']
-        ])('throws for unsupported type %s', (value, type) => {
-            expect(() => validateBoolean(value)).toThrow();
+            [Symbol('test'), 'symbol'],
+            [() => {}, 'function'],
+            [[1, 2, 3], 'array']
+        ])('throws TypeError for unsupported type %s', (value, type) => {
+            if (type === 'array') {
+                expect(() => validateBoolean(value)).toThrow('Cannot convert array to boolean');
+            } else {
+                expect(() => validateBoolean(value)).toThrow(`Cannot convert ${type} to boolean`);
+            }
         });
     });
 

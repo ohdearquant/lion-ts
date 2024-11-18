@@ -12,9 +12,6 @@ const PATTERNS = {
     special: /[+-]?(?:infinity|inf|nan)/i
 };
 
-/**
- * Convert input to numeric type(s) with validation
- */
 export function toNum(
     input: any,
     options: NumberParseOptions = {}
@@ -27,17 +24,14 @@ export function toNum(
         numCount = 1
     } = options;
 
-    // Validate input type
     if (Array.isArray(input)) {
         throw new TypeError('Input cannot be a sequence');
     }
 
-    // Handle boolean input
     if (typeof input === 'boolean') {
         return validateType(Number(input), numType as ValidNumericType);
     }
 
-    // Handle direct numeric input
     if (typeof input === 'number' || input instanceof Complex) {
         const value = input;
         const boundedValue = applyBounds(value, upperBound, lowerBound);
@@ -45,169 +39,130 @@ export function toNum(
         return convertType(preciseValue, numType as ValidNumericType);
     }
 
-    // Extract numbers from string
     const inputStr = String(input).trim();
-    const matches = extractNumbers(inputStr);
+    if (!inputStr) {
+        throw new ParseError('No valid numbers found in empty string');
+    }
 
+    const matches = extractNumbers(inputStr);
     if (!matches.length) {
         throw new ParseError(`No valid numbers found in: ${inputStr}`);
     }
 
-    // Process matches
-    const results = matches
-        .slice(0, numCount)
-        .map(match => processMatch(match, { 
-            upperBound, 
-            lowerBound, 
-            numType, 
-            precision 
-        }));
+    try {
+        const results = matches
+            .slice(0, numCount)
+            .map(match => {
+                const [type, value] = match;
+                const parsedValue = parseNumber([type, value]);
+                const boundedValue = applyBounds(parsedValue, upperBound, lowerBound);
+                const preciseValue = applyPrecision(boundedValue, precision);
+                return convertType(preciseValue, numType as ValidNumericType);
+            });
 
-    return numCount === 1 ? results[0] : results;
+        return numCount === 1 ? results[0] : results;
+    } catch (err) {
+        if (err instanceof ParseError) throw err;
+        throw new ParseError(`No valid numbers found in: ${inputStr}`);
+    }
 }
 
-/**
- * Extract numbers using patterns
- */
 function extractNumbers(text: string): NumberMatch[] {
-    type MatchWithPosition = { type: string; value: string; start: number; end: number };
-    const matchesWithPos: MatchWithPosition[] = [];
-    
-    // Try each pattern in order
-    for (const [name, pattern] of Object.entries(PATTERNS)) {
-        const regex = new RegExp(pattern.source, 'gi');
-        let match;
+    const matches: NumberMatch[] = [];
+    const tokens = text.split(/[\s,;:]+/);
 
-        while ((match = regex.exec(text)) !== null) {
-            const value = match[0];
-            const start = match.index;
-            const end = start + value.length;
-
-            // Check if this match overlaps with any existing matches
-            const overlaps = matchesWithPos.some(existing => 
-                (start < existing.end && end > existing.start)
-            );
-
-            if (!overlaps) {
-                matchesWithPos.push({
-                    type: name,
-                    value: value,
-                    start: start,
-                    end: end
-                });
+    for (const token of tokens) {
+        if (PATTERNS.complex.test(token) || PATTERNS.pure_imaginary.test(token)) {
+            matches.push(['complex', token]);
+        } else if (PATTERNS.scientific.test(token)) {
+            matches.push(['scientific', token]);
+        } else if (PATTERNS.percentage.test(token)) {
+            matches.push(['percentage', token]);
+        } else if (PATTERNS.fraction.test(token)) {
+            matches.push(['fraction', token]);
+        } else if (PATTERNS.special.test(token)) {
+            matches.push(['special', token]);
+        } else if (PATTERNS.decimal.test(token)) {
+            const parsed = parseFloat(token);
+            if (!isNaN(parsed)) {
+                matches.push(['decimal', token]);
             }
         }
     }
 
-    // Sort matches by position and convert to NumberMatch format
-    return matchesWithPos
-        .sort((a, b) => a.start - b.start)
-        .map(m => [m.type, m.value]);
+    return matches;
 }
 
-/**
- * Process a single number match
- */
-function processMatch(
-    match: NumberMatch,
-    options: NumberParseOptions
-): number | Complex {
-    const [type, value] = match;
-    try {
-        let parsedValue = parseNumber([type, value]);
-        parsedValue = applyBounds(parsedValue, options.upperBound, options.lowerBound);
-        parsedValue = applyPrecision(parsedValue, options.precision);
-        return convertType(parsedValue, options.numType as ValidNumericType);
-    } catch (err) {
-        if (err instanceof Error) {
-            throw new ParseError(`Error processing ${value}: ${err.message}`);
-        }
-        throw new ParseError(`Error processing ${value}`);
-    }
-}
-
-/**
- * Parse number string based on type
- */
 function parseNumber([type, value]: NumberMatch): number | Complex {
     value = value.trim();
 
     switch (type) {
-        case 'special':
-            return parseSpecial(value);
-        case 'percentage':
-            return parsePercentage(value);
-        case 'fraction':
-            return parseFraction(value);
-        case 'complex_sci':
-        case 'complex':
-        case 'pure_imaginary':
-            return parseComplex(value);
+        case 'special': {
+            const lower = value.toLowerCase();
+            return lower.startsWith('-') ? -Infinity : Infinity;
+        }
+
+        case 'percentage': {
+            const percent = parseFloat(value.replace('%', ''));
+            if (isNaN(percent)) {
+                throw new ParseError(`Invalid percentage value: ${value}`);
+            }
+            return percent / 100;
+        }
+
+        case 'fraction': {
+            const [numStr, denomStr] = value.split('/');
+            const numerator = parseInt(numStr, 10);
+            const denominator = parseInt(denomStr, 10);
+            if (isNaN(numerator) || isNaN(denominator)) {
+                throw new ParseError(`Invalid fraction: ${value}`);
+            }
+            if (denominator === 0) {
+                throw new ParseError('Division by zero');
+            }
+            return numerator / denominator;
+        }
+
+        case 'complex': {
+            if (value.endsWith('j') || value.endsWith('J')) {
+                if (value === 'j' || value === 'J') {
+                    return new Complex(0, 1);
+                }
+                if (value === '-j' || value === '-J') {
+                    return new Complex(0, -1);
+                }
+                const match = value.slice(0, -1).match(/([+-]?\d*\.?\d+)([+-]\d*\.?\d+)/);
+                if (!match) {
+                    const imaginary = parseFloat(value.slice(0, -1));
+                    if (isNaN(imaginary)) {
+                        throw new ParseError(`Invalid complex number: ${value}`);
+                    }
+                    return new Complex(0, imaginary);
+                }
+                const real = parseFloat(match[1]);
+                const imaginary = parseFloat(match[2]);
+                if (isNaN(real) || isNaN(imaginary)) {
+                    throw new ParseError(`Invalid complex number: ${value}`);
+                }
+                return new Complex(real, imaginary);
+            }
+            throw new ParseError(`Invalid complex number: ${value}`);
+        }
+
         case 'scientific':
-            return parseFloat(value);
-        case 'decimal':
-            return parseFloat(value);
+        case 'decimal': {
+            const parsed = parseFloat(value);
+            if (isNaN(parsed)) {
+                throw new ParseError(`No valid numbers found in: ${value}`);
+            }
+            return parsed;
+        }
+
         default:
             throw new ParseError(`Unknown number type: ${type}`);
     }
 }
 
-/**
- * Utilities for number parsing
- */
-function parseSpecial(value: string): number {
-    const lower = value.toLowerCase();
-    if (lower.includes('infinity') || lower.includes('inf')) {
-        return lower.startsWith('-') ? -Infinity : Infinity;
-    }
-    return NaN;
-}
-
-function parsePercentage(value: string): number {
-    const num = parseFloat(value.replace('%', ''));
-    if (isNaN(num)) {
-        throw new ParseError(`Invalid percentage: ${value}`);
-    }
-    return num / 100;
-}
-
-function parseFraction(value: string): number {
-    const [num, denom] = value.split('/').map(Number);
-    if (isNaN(num) || isNaN(denom)) {
-        throw new ParseError(`Invalid fraction: ${value}`);
-    }
-    if (denom === 0) {
-        throw new ParseError('Division by zero');
-    }
-    return num / denom;
-}
-
-function parseComplex(value: string): Complex {
-    // Handle pure imaginary
-    if (/^[+-]?(?:\d*\.?\d*)?[jJ]$/.test(value)) {
-        if (/^[+-]?[jJ]$/.test(value)) {
-            return new Complex(0, value.startsWith('-') ? -1 : 1);
-        }
-        const imag = parseFloat(value.slice(0, -1) || '1');
-        return new Complex(0, imag);
-    }
-
-    // Parse complex number with scientific notation or regular format
-    const parts = value.slice(0, -1).match(/([+-]?\d*\.?\d+(?:[eE][+-]?\d+)?)([+-]\d*\.?\d+(?:[eE][+-]?\d+)?)?/);
-    if (!parts) {
-        throw new ParseError(`Invalid complex number: ${value}`);
-    }
-
-    const real = parseFloat(parts[1]);
-    const imagStr = parts[2] || '+1';
-    const imag = parseFloat(imagStr);
-
-    return new Complex(real, imag);
-}
-
-/**
- * Validation and conversion utilities
- */
 function validateType(
     value: number | Complex,
     type: ValidNumericType
@@ -215,14 +170,19 @@ function validateType(
     switch (type) {
         case 'int':
             if (value instanceof Complex) {
-                throw new ParseError('Cannot convert complex to int');
+                throw new ParseError('Cannot convert complex number to int');
             }
-            const rounded = Math.round(value);
-            return rounded;
+            if (!Number.isFinite(value)) {
+                throw new ParseError('Cannot convert infinite or NaN to int');
+            }
+            return Math.round(value);
         case 'float':
-            return value instanceof Complex ? value : Number(value);
+            if (value instanceof Complex) {
+                throw new ParseError('Cannot convert complex number to float');
+            }
+            return value;
         case 'complex':
-            return value instanceof Complex ? value : new Complex(Number(value), 0);
+            return value instanceof Complex ? value : new Complex(value, 0);
         default:
             throw new ParseError(`Invalid number type: ${type}`);
     }
@@ -252,12 +212,18 @@ function applyPrecision(
     if (precision == null || value instanceof Complex) {
         return value;
     }
+    if (!Number.isFinite(value)) {
+        return value;
+    }
     return Number(value.toFixed(precision));
 }
 
 function convertType(
     value: number | Complex,
-    targetType: ValidNumericType = 'float'
+    targetType: ValidNumericType
 ): number | Complex {
+    if (value instanceof Complex && targetType === 'float') {
+        return value;
+    }
     return validateType(value, targetType);
 }

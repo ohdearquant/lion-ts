@@ -77,7 +77,7 @@ export function validateMapping(
     options: ValidateMappingOptions = {}
 ): Record<string, unknown> {
     const {
-        similarityThreshold = 0.8,
+        similarityThreshold = 0.85,
         fuzzyMatch = true,
         suppress = false,
         strict = false,
@@ -112,7 +112,12 @@ export function validateMapping(
                     }
                     return {};
                 }
-                dictInput = input as Record<string, unknown>;
+                // Handle objects with toDict method
+                if ('toDict' in input && typeof (input as any).toDict === 'function') {
+                    dictInput = (input as any).toDict();
+                } else {
+                    dictInput = input as Record<string, unknown>;
+                }
             } else {
                 throw new TypeError('Input must be a string or object');
             }
@@ -173,7 +178,7 @@ export function validateMapping(
             }
         }
 
-        // Build result based on handleUnmatched mode
+        // Handle unmatched keys based on mode
         switch (handleUnmatched) {
             case 'ignore':
                 // Keep all input keys and matched keys with expected names
@@ -228,6 +233,13 @@ export function validateMapping(
                 // Include matched keys with expected names
                 for (const [inputKey, expectedKey] of matchedKeys.entries()) {
                     result[expectedKey] = dictInput[inputKey];
+                }
+                // Check for missing expected keys
+                const missingKeys = Object.keys(mapping).filter(
+                    key => !Object.keys(result).includes(key)
+                );
+                if (missingKeys.length > 0) {
+                    throw new ValueError(`Missing required keys: ${missingKeys.join(', ')}`);
                 }
                 break;
 
